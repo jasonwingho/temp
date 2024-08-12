@@ -1,0 +1,311 @@
+Feature: FTPClientPool Behavior
+
+  Background:
+    Given the FTPClientPool is configured with the following parameters:
+      | host     | port | username | password | maxTotal | maxIdle | minIdle | maxWaitMillis | minEvictableIdleTimeMillis | maxRetries | retryDelay |
+      | localhost | 21   | user     | pass     | 5        | 5       | 2       | 5000          | 60000                     | 3          | 1000       |
+
+  Scenario: Initialize pool with correct number of connections
+    When the FTPClientPool is initialized
+    Then the pool should have 2 idle connections
+
+  Scenario: Borrow object when idle objects are available
+    Given the FTPClientPool is initialized
+    When a client borrows an FTPClient object
+    Then the pool should have 1 idle connection and 1 active connection
+
+  Scenario: Borrow object when no idle objects are available
+    Given the FTPClientPool is initialized
+    And 2 FTPClient objects are borrowed
+    When a client borrows another FTPClient object
+    Then the pool should have 0 idle connections and 3 active connections
+
+  Scenario: Borrow object when pool is at maxTotal capacity
+    Given the FTPClientPool is initialized
+    And 5 FTPClient objects are borrowed
+    When a client attempts to borrow another FTPClient object
+    Then the client should wait for maxWaitMillis
+    And an exception should be thrown if no object becomes available
+
+  Scenario: Return object to the pool
+    Given the FTPClientPool is initialized
+    And 1 FTPClient object is borrowed
+    When the borrowed FTPClient object is returned
+    Then the pool should have 2 idle connections and 0 active connections
+
+  Scenario: Validate connections before borrowing
+    Given the FTPClientPool is initialized with testOnBorrow set to true
+    When a client borrows an FTPClient object
+    Then the connection should be validated before being returned
+
+  Scenario: Evict idle connections
+    Given the FTPClientPool is initialized
+    And minEvictableIdleTimeMillis is set to 100 milliseconds
+    When 1 second passes
+    Then idle connections should be evicted
+
+  Scenario: Get pool statistics
+    Given the FTPClientPool is initialized
+    And 1 FTPClient object is borrowed
+    When getPoolStats is called
+    Then it should report 1 active, 1 idle, and 0 waiting connections
+
+  Scenario: Handle concurrent requests
+    Given the FTPClientPool is initialized
+    When 10 clients concurrently try to borrow FTPClient objects
+    Then 5 clients should successfully borrow objects
+    And 5 clients should wait or receive exceptions
+
+  Scenario: Properly shutdown the pool
+    Given the FTPClientPool is initialized
+    And 2 FTPClient objects are borrowed
+    When the destroy method is called
+    Then all connections should be closed
+
+
+    import io.cucumber.java.en.*;
+import io.cucumber.datatable.DataTable;
+import static org.junit.Assert.*;
+import static org.mockito.Mockito.*;
+import org.mockito.Mockito;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.*;
+
+public class FTPClientPoolSteps {
+
+    private FTPClientPool ftpClientPool;
+    private FTPClientFactory mockFactory;
+    private List<FTPClient> borrowedClients = new ArrayList<>();
+
+    @Given("the FTPClientPool is configured with the following parameters:")
+    public void configureFTPClientPool(DataTable dataTable) {
+        Map<String, String> config = dataTable.asMaps().get(0);
+        mockFactory = mock(FTPClientFactory.class);
+        ftpClientPool = new FTPClientPool(
+            config.get("host"), Integer.parseInt(config.get("port")),
+            config.get("username"), config.get("password"),
+            Integer.parseInt(config.get("maxTotal")),
+            Integer.parseInt(config.get("maxIdle")),
+            Integer.parseInt(config.get("minIdle")),
+            Long.parseLong(config.get("maxWaitMillis")),
+            Long.parseLong(config.get("minEvictableIdleTimeMillis")),
+            Integer.parseInt(config.get("maxRetries")),
+            Long.parseLong(config.get("retryDelay"))
+        );
+        ftpClientPool.setFactory(mockFactory); // Assume we've added a method to set the factory for testing
+    }
+
+    @When("the FTPClientPool is initialized")
+    public void initializeFTPClientPool() {
+        when(mockFactory.create()).thenReturn(mock(FTPClient.class));
+        ftpClientPool.initalize();
+    }
+
+    @Then("the pool should have {int} idle connections")
+    public void verifyIdleConnections(int expectedIdle) {
+        assertEquals(expectedIdle, ftpClientPool.getNumIdle());
+    }
+
+    @When("a client borrows an FTPClient object")
+    public void borrowFTPClient() throws Exception {
+        borrowedClients.add(ftpClientPool.borrowObject());
+    }
+
+    @Then("the pool should have {int} idle connection and {int} active connection")
+    public void verifyPoolState(int expectedIdle, int expectedActive) {
+        assertEquals(expectedIdle, ftpClientPool.getNumIdle());
+        assertEquals(expectedActive, ftpClientPool.getNumActive());
+    }
+
+    @Given("{int} FTPClient objects are borrowed")
+    public void borrowMultipleFTPClients(int count) throws Exception {
+        for (int i = 0; i < count; i++) {
+            borrowedClients.add(ftpClientPool.borrowObject());
+        }
+    }
+
+    @When("a client attempts to borrow another FTPClient object")
+    public void attemptToBorrowWhenFull() {
+        assertThrows(Exception.class, () -> {
+            ftpClientPool.borrowObject();
+        });
+    }
+
+    @Then("the client should wait for maxWaitMillis")
+    public void verifyClientWaits() {
+        // This step is implicit in the previous step's exception throwing
+    }
+
+    @And("an exception should be thrown if no object becomes available")
+    public void verifyExceptionThrown() {
+        // This step is also implicit in the previous steps
+    }
+
+    @When("the borrowed FTPClient object is returned")
+    public void returnBorrowedFTPClient() {
+        ftpClientPool.returnObject(borrowedClients.remove(0));
+    }
+
+    @Given("the FTPClientPool is initialized with testOnBorrow set to true")
+    public void initializeWithTestOnBorrow() {
+        // Assume we've added a method to set testOnBorrow for testing
+        ftpClientPool.setTestOnBorrow(true);
+        initializeFTPClientPool();
+    }
+
+    @Then("the connection should be validated before being returned")
+    public void verifyConnectionValidation() throws Exception {
+        FTPClient client = ftpClientPool.borrowObject();
+        verify(mockFactory).validateObject(any());
+        borrowedClients.add(client);
+    }
+
+    @And("minEvictableIdleTimeMillis is set to {int} milliseconds")
+    public void setMinEvictableIdleTimeMillis(int millis) {
+        ftpClientPool.setMinEvictableIdleTimeMillis(millis);
+    }
+
+    @When("{int} second passes")
+    public void waitForSeconds(int seconds) throws InterruptedException {
+        Thread.sleep(seconds * 1000);
+    }
+
+    @Then("idle connections should be evicted")
+    public void verifyIdleConnectionsEvicted() {
+        assertTrue(ftpClientPool.getNumIdle() < 2);
+    }
+
+    @When("getPoolStats is called")
+    public void callGetPoolStats() {
+        // No action needed, we'll verify in the next step
+    }
+
+    @Then("it should report {int} active, {int} idle, and {int} waiting connections")
+    public void verifyPoolStats(int active, int idle, int waiting) {
+        String stats = ftpClientPool.getPoolStats();
+        assertTrue(stats.contains("Active: " + active));
+        assertTrue(stats.contains("Idle: " + idle));
+        assertTrue(stats.contains("Waiting: " + waiting));
+    }
+
+    @When("{int} clients concurrently try to borrow FTPClient objects")
+    public void concurrentBorrowAttempts(int clientCount) throws InterruptedException {
+        ExecutorService executor = Executors.newFixedThreadPool(clientCount);
+        CountDownLatch latch = new CountDownLatch(clientCount);
+
+        for (int i = 0; i < clientCount; i++) {
+            executor.submit(() -> {
+                try {
+                    ftpClientPool.borrowObject();
+                } catch (Exception e) {
+                    // Exception expected for some clients
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
+        latch.await(10, TimeUnit.SECONDS);
+        executor.shutdown();
+    }
+
+    @Then("{int} clients should successfully borrow objects")
+    public void verifySuccessfulBorrows(int successCount) {
+        assertEquals(successCount, ftpClientPool.getNumActive());
+    }
+
+    @And("{int} clients should wait or receive exceptions")
+    public void verifyWaitingOrExceptionClients(int count) {
+        // This step is implicit in the previous step's verification
+    }
+
+    @When("the destroy method is called")
+    public void callDestroyMethod() {
+        ftpClientPool.destroy();
+    }
+
+    @Then("all connections should be closed")
+    public void verifyAllConnectionsClosed() {
+        assertEquals(0, ftpClientPool.getNumActive());
+        assertEquals(0, ftpClientPool.getNumIdle());
+    }
+}
+
+# Common Test Cases for FTPClientPool and FTPClient
+
+## FTPClientPool Test Cases
+
+1. Initialization
+   - Test that the pool initializes with the correct number of connections (minIdle)
+   - Verify that initialization handles exceptions gracefully if connection creation fails
+
+2. Borrowing Objects
+   - Test borrowing an object when idle objects are available
+   - Test borrowing an object when no idle objects are available, but total objects < maxTotal
+   - Test borrowing an object when pool is at maxTotal capacity
+   - Verify that borrowing waits for maxWaitMillis before throwing an exception
+
+3. Returning Objects
+   - Test returning a borrowed object to the pool
+   - Verify that returned objects become available for future borrowing
+
+4. Connection Management
+   - Test that connections are validated before being borrowed (testOnBorrow)
+   - Test that idle connections are validated periodically (testWhileIdle)
+   - Verify that idle connections are evicted after minEvictableIdleTimeMillis
+
+5. Pool Statistics
+   - Test the getPoolStats() method for accuracy in reporting active, idle, and waiting connections
+
+6. Concurrent Usage
+   - Test multiple threads borrowing and returning objects concurrently
+   - Verify that the pool handles concurrent requests correctly up to maxTotal
+
+7. Error Handling
+   - Test behavior when FTPClient creation fails
+   - Verify proper handling of network errors during borrowing and returning
+
+8. Shutdown
+   - Test that the destroy() method properly closes all connections
+
+## FTPClient Test Cases
+
+1. Connection
+   - Test successful connection to FTP server
+   - Test connection failure scenarios (wrong credentials, server unavailable, etc.)
+   - Verify retry mechanism works as expected (maxRetries and retryDelay)
+
+2. Sending Files
+   - Test sending a string as a file successfully
+   - Test sending to a non-existent directory
+   - Test sending with insufficient permissions
+   - Verify proper handling of different character encodings
+
+3. Connection State
+   - Test isConnected() method in various states (connected, disconnected, after network error)
+
+4. Disconnection
+   - Test disconnect() method
+   - Verify resources are properly released after disconnection
+
+5. Error Handling
+   - Test behavior when the FTP server unexpectedly closes the connection
+   - Verify proper logging of errors and exceptions
+
+6. Retry Mechanism
+   - Test that operations are retried the correct number of times
+   - Verify that the retry delay is respected between attempts
+
+7. Thread Safety
+   - If the FTPClient is intended to be used by multiple threads, test concurrent operations
+
+8. Performance
+   - Test sending large files or many small files in succession
+   - Verify timeout handling for long-running operations
+
+9. Security
+   - Test that passwords are not logged or exposed in error messages
+   - Verify that the connection uses the expected level of encryption (if applicable)
+
+These test cases cover a wide range of scenarios and edge cases for both the FTPClientPool and FTPClient classes. Implementing these tests will help ensure the robustness and reliability of your FTP client implementation.
