@@ -1,0 +1,39 @@
+    New[New] --> |NewOrderAccept| PendingNew[PendingNew]
+    New --> |OrderCancelRequest| PendingCancel[PendingCancel]
+    New --> |OrderDoneForDay| DoneOfDay[DoneOfDay]
+    New --> |OrderUnsolicitedCancel| Canceled[Canceled]
+    New --> |NewOrderReject| Rejected[Rejected]
+
+    PendingNew --> |NewOrderAccept| New
+    PendingNew --> |NewOrderReject| Rejected
+    PendingNew --> |OrderCancelRequest| PendingCancel
+    PendingNew --> |OrderDoneForDay| DoneOfDay
+    PendingNew --> |OrderUnsolicitedCancel| Canceled
+
+    New --> |OrderFillRequest| PartiallyFilled[PartiallyFilled]
+    PartiallyFilled --> |OrderUpdateRequest| PendingReplace[PendingReplace]
+    PartiallyFilled --> |OrderCancelRequest| PendingCancel
+    PartiallyFilled --> |OrderFillRequest| Filled[Filled]
+    PartiallyFilled --> |OrderDoneForDay| DoneOfDay
+    PartiallyFilled --> |OrderUnsolicitedCancel| Canceled
+
+    PendingReplace --> |OrderUpdateAccept| Replaced[Replaced]
+    PendingReplace --> |OrderCancelRequest| PendingCancel
+    PendingReplace --> |OrderFillRequest| PartiallyFilled
+    PendingReplace --> |OrderCancelUpdateReject| New
+    PendingReplace --> |OrderDoneForDay| DoneOfDay
+    PendingReplace --> |OrderUnsolicitedCancel| Canceled
+
+    Replaced --> |OrderUpdateRequest| PendingReplace
+    Replaced --> |OrderCancelRequest| PendingCancel
+    Replaced --> |OrderFillRequest| PartiallyFilled
+    Replaced --> |OrderDoneForDay| DoneOfDay
+    Replaced --> |OrderUnsolicitedCancel| Canceled
+
+    PendingCancel --> |OrderCancelAccept| Canceled
+    PendingCancel --> |OrderCancelUpdateReject| New
+    PendingCancel --> |OrderFillRequest| PartiallyFilled
+    PendingCancel --> |OrderDoneForDay| DoneOfDay
+    PendingCancel --> |OrderUnsolicitedCancel| Canceled
+
+    Filled --> |OrderDoneForDay| DoneOfDay
