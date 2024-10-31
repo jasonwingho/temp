@@ -1,89 +1,179 @@
+package com.baml.gdot.recall.tests;
 
+import io.cucumber.java.Before;
+import io.cucumber.java.en.Given;
 import io.cucumber.java.en.Then;
 import io.cucumber.java.en.When;
+import org.junit.Assert;
 import static org.junit.Assert.*;
-import java.text.ParseException;
 
-public class ByteParseSteps {
-    private boolean booleanResult;
-    private int intResult;
-    private long longResult;
-    private double doubleResult;
-    private ParseException thrownException;
+import com.baml.gdot.recall.objects.Order;
+import com.baml.gdot.recall.state.machine.order.OrderState;
+import com.baml.gdot.recall.amps.parser.MessageParser;
+import com.baml.gdot.recall.amps.parser.ParsingErrorException;
+import com.baml.gdot.recall.amps.MessageType;
 
-    @When("I parse boolean value {string}")
-    public void i_parse_boolean_value(String input) {
-        booleanResult = ByteParseUtil.parseBoolean(input.getBytes(), 0, input.length());
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class MessageParserSteps {
+    private static final Logger LOGGER = LoggerFactory.getLogger(MessageParserSteps.class);
+    
+    private MessageParser<Order> jsonParser;
+    private MessageParser<Order> nvfixParser;
+    private ObjectMapper objectMapper;
+    private String inputMessage;
+    private Order parsedOrder;
+    private String outputMessage;
+    private Exception thrownException;
+
+    @Before
+    public void setup() {
+        objectMapper = new ObjectMapper();
+        objectMapper.registerModule(new JavaTimeModule());
+        jsonParser = new MessageParser<>(MessageType.JSON, Order.class);
+        nvfixParser = new MessageParser<>(MessageType.NVFIX, Order.class);
     }
 
-    @Then("the boolean result should be {boolean}")
-    public void the_boolean_result_should_be(boolean expected) {
-        assertEquals(expected, booleanResult);
+    @Given("a message parser is initialized for Order class")
+    public void messageParserIsInitialized() {
+        assertNotNull("JSON parser should not be null", jsonParser);
+        assertNotNull("NVFIX parser should not be null", nvfixParser);
     }
 
-    @When("I parse integer value {string}")
-    public void i_parse_integer_value(String input) throws ParseException {
-        intResult = ByteParseUtil.parseInt(input.getBytes(), 0, input.length());
+    @Given("a JSON Order message:")
+    public void givenJsonOrderMessage(String message) {
+        inputMessage = message;
     }
 
-    @Then("the integer result should be {int}")
-    public void the_integer_result_should_be(int expected) {
-        assertEquals(expected, intResult);
+    @Given("a NVFIX Order message:")
+    public void givenNvfixOrderMessage(String message) {
+        inputMessage = message;
     }
 
-    @When("I attempt to parse invalid integer {string}")
-    public void i_attempt_to_parse_invalid_integer(String input) {
+    @Given("a NVFIX Order message {string}")
+    public void givenNvfixOrderMessageInline(String message) {
+        inputMessage = message;
+    }
+
+    @Given("an Order with values:")
+    public void givenOrder(Map<String, String> values) {
+        Order order = new Order();
         try {
-            ByteParseUtil.parseInt(input.getBytes(), 0, input.length());
-            thrownException = null;
-        } catch (ParseException e) {
+            if (values.containsKey("orderID")) {
+                order.setOrderID(values.get("orderID"));
+            }
+            if (values.containsKey("account")) {
+                order.setAccount(values.get("account"));
+            }
+            if (values.containsKey("ordQty")) {
+                order.setOrdQty(Long.parseLong(values.get("ordQty")));
+            }
+            if (values.containsKey("orderType")) {
+                order.setOrderType(values.get("orderType"));
+            }
+            if (values.containsKey("onBehalfOfCompID")) {
+                order.setOnBehalfOfCompID(values.get("onBehalfOfCompID"));
+            }
+            if (values.containsKey("tradeAllocIndicator")) {
+                order.setTradeAllocIndicator(Integer.parseInt(values.get("tradeAllocIndicator")));
+            }
+            if (values.containsKey("currentState")) {
+                order.setCurrentState(OrderState.valueOf(values.get("currentState")));
+            }
+            parsedOrder = order;
+        } catch (Exception e) {
             thrownException = e;
         }
     }
 
-    @Then("a ParseException should be thrown")
-    public void a_parse_exception_should_be_thrown() {
-        assertNotNull("Expected ParseException but none was thrown", thrownException);
-        assertTrue(thrownException instanceof ParseException);
-    }
-
-    @When("I parse long value {string}")
-    public void i_parse_long_value(String input) throws ParseException {
-        longResult = ByteParseUtil.parseLong(input.getBytes(), 0, input.length());
-    }
-
-    @Then("the long result should be {long}")
-    public void the_long_result_should_be(long expected) {
-        assertEquals(expected, longResult);
-    }
-
-    @When("I attempt to parse invalid long {string}")
-    public void i_attempt_to_parse_invalid_long(String input) {
+    @When("the message is parsed as JSON")
+    public void parseJsonMessage() {
         try {
-            ByteParseUtil.parseLong(input.getBytes(), 0, input.length());
-            thrownException = null;
-        } catch (ParseException e) {
+            parsedOrder = jsonParser.parse(inputMessage);
+        } catch (Exception e) {
             thrownException = e;
+            LOGGER.error("Error parsing JSON message", e);
         }
     }
 
-    @When("I parse double value {string}")
-    public void i_parse_double_value(String input) throws ParseException {
-        doubleResult = ByteParseUtil.parseDouble(input.getBytes(), 0, input.length());
-    }
-
-    @Then("the double result should be {double} with delta {double}")
-    public void the_double_result_should_be_with_delta(double expected, double delta) {
-        assertEquals(expected, doubleResult, delta);
-    }
-
-    @When("I attempt to parse invalid double {string}")
-    public void i_attempt_to_parse_invalid_double(String input) {
+    @When("the message is parsed as NVFIX")
+    public void parseNvfixMessage() {
         try {
-            ByteParseUtil.parseDouble(input.getBytes(), 0, input.length());
-            thrownException = null;
-        } catch (ParseException e) {
+            parsedOrder = nvfixParser.parse(inputMessage);
+        } catch (Exception e) {
             thrownException = e;
+            LOGGER.error("Error parsing NVFIX message", e);
         }
+    }
+
+    @When("the Order is converted to JSON string")
+    public void convertToJsonString() {
+        try {
+            outputMessage = jsonParser.toString(parsedOrder);
+        } catch (Exception e) {
+            thrownException = e;
+            LOGGER.error("Error converting to JSON string", e);
+        }
+    }
+
+    @When("the Order is converted to NVFIX string")
+    public void convertToNvfixString() {
+        try {
+            outputMessage = nvfixParser.toString(parsedOrder);
+        } catch (Exception e) {
+            thrownException = e;
+            LOGGER.error("Error converting to NVFIX string", e);
+        }
+    }
+
+    @Then("the parsed Order should have orderID {string}")
+    public void verifyParsedOrderId(String expectedId) {
+        assertNotNull("Parsed order should not be null", parsedOrder);
+        assertEquals("Order ID should match", expectedId, parsedOrder.getOrderID());
+    }
+
+    @Then("the parsed Order should have state {string}")
+    public void verifyParsedOrderState(String expectedState) {
+        assertNotNull("Parsed order should not be null", parsedOrder);
+        assertEquals("Order state should match", 
+            OrderState.valueOf(expectedState), parsedOrder.getCurrentState());
+    }
+
+    @Then("the parsed Order should have quantity {int}")
+    public void verifyParsedOrderQuantity(int expectedQuantity) {
+        assertNotNull("Parsed order should not be null", parsedOrder);
+        assertEquals("Order quantity should match", expectedQuantity, parsedOrder.getOrdQty());
+    }
+
+    @Then("the parsed Order should have account {string}")
+    public void verifyParsedOrderAccount(String expectedAccount) {
+        assertNotNull("Parsed order should not be null", parsedOrder);
+        assertEquals("Account should match", expectedAccount, parsedOrder.getAccount());
+    }
+
+    @Then("the JSON string should contain {string}")
+    public void verifyJsonStringContains(String expectedContent) {
+        assertNotNull("Output message should not be null", outputMessage);
+        assertTrue("JSON string should contain expected content", 
+            outputMessage.contains(expectedContent));
+    }
+
+    @Then("the NVFIX string should contain {string}")
+    public void verifyNvfixStringContains(String expectedContent) {
+        assertNotNull("Output message should not be null", outputMessage);
+        assertTrue("NVFIX string should contain expected content", 
+            outputMessage.contains(expectedContent));
+    }
+
+    @Then("a ParsingErrorException should be thrown")
+    public void verifyParsingErrorException() {
+        assertNotNull("Exception should have been thrown", thrownException);
+        assertTrue("Exception should be of type ParsingErrorException", 
+            thrownException instanceof ParsingErrorException);
     }
 }
