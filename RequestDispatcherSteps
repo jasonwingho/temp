@@ -1,0 +1,247 @@
+// RequestDispatcherSteps.java
+import io.cucumber.java.en.*;
+import org.mockito.*;
+import static org.mockito.Mockito.*;
+import static org.junit.Assert.*;
+import org.activiti.engine.delegate.DelegateExecution;
+import java.util.Arrays;
+import java.util.concurrent.*;
+
+public class RequestDispatcherSteps {
+    
+    @Mock
+    private DelegateExecution mockExecution;
+    
+    private RecallRequestDispatcher recallRequestDispatcher;
+    private TicketRequestDispatcher ticketRequestDispatcher;
+    private ExecutorService executorService;
+    private CountDownLatch latch;
+    
+    private RecallRequest recallRequest1;
+    private RecallRequest recallRequest2;
+    private RecallRequest recallRequest3;
+    private AtomicBoolean firstRequestProcessed;
+    private AtomicBoolean secondRequestProcessed;
+    private RecallTicket recallTicket1;
+    private RecallTicket recallTicket2;
+    private ExecutionReport executionReport1;
+    
+    @Before
+    public void setup() {
+        MockitoAnnotations.openMocks(this);
+        recallRequestDispatcher = new RecallRequestDispatcher(Arrays.asList("requestId"));
+        ticketRequestDispatcher = new TicketRequestDispatcher(Arrays.asList("id", "clOrdID"));
+        executorService = Executors.newFixedThreadPool(5);
+        latch = new CountDownLatch(2);
+        firstRequestProcessed = new AtomicBoolean(false);
+        secondRequestProcessed = new AtomicBoolean(false);
+    }
+    
+    @Given("I have multiple recall requests with same ID")
+    public void i_have_multiple_recall_requests_with_same_id() {
+        recallRequest1 = new RecallRequest();
+        recallRequest1.setRequestId("REQ001");
+        
+        recallRequest2 = new RecallRequest();
+        recallRequest2.setRequestId("REQ001");
+        
+        when(mockExecution.getVariable(DelegateExecutionVariable.DATA.toString()))
+            .thenReturn(recallRequest1)
+            .thenReturn(recallRequest2);
+    }
+    
+    @Given("I have multiple recall tickets with same ID")
+    public void i_have_multiple_recall_tickets_with_same_id() {
+        recallTicket1 = new RecallTicket();
+        recallTicket1.setId("TICKET001");
+        
+        recallTicket2 = new RecallTicket();
+        recallTicket2.setId("TICKET001");
+        
+        when(mockExecution.getVariable(DelegateExecutionVariable.DATA.toString()))
+            .thenReturn(recallTicket1)
+            .thenReturn(recallTicket2);
+    }
+    
+    @When("I dispatch the recall requests concurrently")
+    public void i_dispatch_the_recall_requests_concurrently() throws Exception {
+        // Submit first request
+        executorService.submit(() -> {
+            try {
+                recallRequestDispatcher.dispatch(mockExecution);
+                latch.countDown();
+            } catch (Exception e) {
+                fail("Exception not expected: " + e.getMessage());
+            }
+        });
+        
+        // Small delay to ensure first request is processed first
+        Thread.sleep(100);
+        
+        // Submit second request
+        executorService.submit(() -> {
+            try {
+                recallRequestDispatcher.dispatch(mockExecution);
+                latch.countDown();
+            } catch (Exception e) {
+                fail("Exception not expected: " + e.getMessage());
+            }
+        });
+    }
+    
+    @When("I dispatch the recall tickets concurrently")
+    public void i_dispatch_the_recall_tickets_concurrently() throws Exception {
+        // Submit first ticket
+        executorService.submit(() -> {
+            try {
+                ticketRequestDispatcher.dispatch(mockExecution);
+                latch.countDown();
+            } catch (Exception e) {
+                fail("Exception not expected: " + e.getMessage());
+            }
+        });
+        
+        // Small delay to ensure first ticket is processed first
+        Thread.sleep(100);
+        
+        // Submit second ticket
+        executorService.submit(() -> {
+            try {
+                ticketRequestDispatcher.dispatch(mockExecution);
+                latch.countDown();
+            } catch (Exception e) {
+                fail("Exception not expected: " + e.getMessage());
+            }
+        });
+    }
+    
+    @Then("the second request should wait for the first one to complete")
+    public void the_second_request_should_wait_for_first_to_complete() throws Exception {
+        // Release first request
+        recallRequestDispatcher.release(mockExecution);
+        
+        // Wait for both requests to complete
+        boolean completed = latch.await(5, TimeUnit.SECONDS);
+        assertTrue("Requests did not complete in time", completed);
+    }
+
+    @Given("I have two recall requests with different IDs")
+    public void i_have_two_recall_requests_with_different_ids() {
+        // Create two recall requests with different IDs
+        recallRequest1 = new RecallRequest();
+        recallRequest1.setRequestId("REQ001");
+        
+        recallRequest2 = new RecallRequest();
+        recallRequest2.setRequestId("REQ002");
+        
+        // Create answer that returns different requests based on invocation count
+        Answer<?> answer = new Answer<Object>() {
+            private int count = 0;
+            
+            @Override
+            public Object answer(InvocationOnMock invocation) {
+                count++;
+                return count == 1 ? recallRequest1 : recallRequest2;
+            }
+        };
+        
+        when(mockExecution.getVariable(DelegateExecutionVariable.DATA.toString()))
+            .thenAnswer(answer);
+    }
+    
+    @When("I dispatch these requests concurrently")
+    public void i_dispatch_these_requests_concurrently() {
+        // Submit first request
+        executorService.submit(() -> {
+            try {
+                recallRequestDispatcher.dispatch(mockExecution);
+                firstRequestProcessed.set(true);
+                latch.countDown();
+            } catch (Exception e) {
+                fail("Exception not expected: " + e.getMessage());
+            }
+        });
+        
+        // Submit second request immediately (no delay needed as they have different IDs)
+        executorService.submit(() -> {
+            try {
+                recallRequestDispatcher.dispatch(mockExecution);
+                secondRequestProcessed.set(true);
+                latch.countDown();
+            } catch (Exception e) {
+                fail("Exception not expected: " + e.getMessage());
+            }
+        });
+    }
+    
+    @Then("both requests should be processed concurrently")
+    public void both_requests_should_be_processed_concurrently() throws Exception {
+        // Wait a short time to allow both requests to be processed
+        Thread.sleep(500);
+        
+        // Both requests should be processed without waiting for release
+        assertTrue("First request should be processed", firstRequestProcessed.get());
+        assertTrue("Second request should be processed", secondRequestProcessed.get());
+        
+        // Verify both completed within expected timeframe
+        boolean completed = latch.await(1, TimeUnit.SECONDS);
+        assertTrue("Both requests should complete quickly", completed);
+    
+    @Then("the second ticket should wait for the first one to complete")
+    public void the_second_ticket_should_wait_for_first_to_complete() throws Exception {
+        // Release first ticket
+        ticketRequestDispatcher.release(mockExecution);
+        
+        // Wait for both tickets to complete
+        boolean completed = latch.await(5, TimeUnit.SECONDS);
+        assertTrue("Tickets did not complete in time", completed);
+    }
+    
+    @After
+    public void tearDown() {
+        executorService.shutdownNow();
+    }
+}
+
+// request_dispatcher.feature
+Feature: Request Dispatcher Functionality
+  As a system
+  I want to ensure requests are processed appropriately based on their IDs
+  So that data consistency is maintained while maximizing throughput
+
+  Scenario: Processing multiple recall requests with same ID
+    Given I have multiple recall requests with same ID
+    When I dispatch the recall requests concurrently
+    Then the second request should wait for the first one to complete
+
+  Scenario: Processing multiple recall tickets with same ID
+    Given I have multiple recall tickets with same ID
+    When I dispatch the recall tickets concurrently
+    Then the second ticket should wait for the first one to complete
+
+  Scenario: Processing recall requests with different IDs concurrently
+    Given I have two recall requests with different IDs
+    When I dispatch these requests concurrently
+    Then both requests should be processed concurrently
+
+// RunCucumberTest.java
+import io.cucumber.junit.Cucumber;
+import io.cucumber.junit.CucumberOptions;
+import org.junit.runner.RunWith;
+
+@RunWith(Cucumber.class)
+@CucumberOptions(
+    features = "src/test/resources/features",
+    glue = {"com.baml.gdot.recall.test.steps"},
+    plugin = {"pretty", "html:target/cucumber-reports"}
+)
+public class RunCucumberTest {
+}
+
+// build.gradle dependencies
+dependencies {
+    testImplementation 'io.cucumber:cucumber-java:7.11.0'
+    testImplementation 'io.cucumber:cucumber-junit:7.11.0'
+    testImplementation 'org.mockito:mockito-core:4.11.0'
+    testImplementation 'junit:junit:4.13.2'
+}
