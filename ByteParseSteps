@@ -1,0 +1,89 @@
+
+import io.cucumber.java.en.Then;
+import io.cucumber.java.en.When;
+import static org.junit.Assert.*;
+import java.text.ParseException;
+
+public class ByteParseSteps {
+    private boolean booleanResult;
+    private int intResult;
+    private long longResult;
+    private double doubleResult;
+    private ParseException thrownException;
+
+    @When("I parse boolean value {string}")
+    public void i_parse_boolean_value(String input) {
+        booleanResult = ByteParseUtil.parseBoolean(input.getBytes(), 0, input.length());
+    }
+
+    @Then("the boolean result should be {boolean}")
+    public void the_boolean_result_should_be(boolean expected) {
+        assertEquals(expected, booleanResult);
+    }
+
+    @When("I parse integer value {string}")
+    public void i_parse_integer_value(String input) throws ParseException {
+        intResult = ByteParseUtil.parseInt(input.getBytes(), 0, input.length());
+    }
+
+    @Then("the integer result should be {int}")
+    public void the_integer_result_should_be(int expected) {
+        assertEquals(expected, intResult);
+    }
+
+    @When("I attempt to parse invalid integer {string}")
+    public void i_attempt_to_parse_invalid_integer(String input) {
+        try {
+            ByteParseUtil.parseInt(input.getBytes(), 0, input.length());
+            thrownException = null;
+        } catch (ParseException e) {
+            thrownException = e;
+        }
+    }
+
+    @Then("a ParseException should be thrown")
+    public void a_parse_exception_should_be_thrown() {
+        assertNotNull("Expected ParseException but none was thrown", thrownException);
+        assertTrue(thrownException instanceof ParseException);
+    }
+
+    @When("I parse long value {string}")
+    public void i_parse_long_value(String input) throws ParseException {
+        longResult = ByteParseUtil.parseLong(input.getBytes(), 0, input.length());
+    }
+
+    @Then("the long result should be {long}")
+    public void the_long_result_should_be(long expected) {
+        assertEquals(expected, longResult);
+    }
+
+    @When("I attempt to parse invalid long {string}")
+    public void i_attempt_to_parse_invalid_long(String input) {
+        try {
+            ByteParseUtil.parseLong(input.getBytes(), 0, input.length());
+            thrownException = null;
+        } catch (ParseException e) {
+            thrownException = e;
+        }
+    }
+
+    @When("I parse double value {string}")
+    public void i_parse_double_value(String input) throws ParseException {
+        doubleResult = ByteParseUtil.parseDouble(input.getBytes(), 0, input.length());
+    }
+
+    @Then("the double result should be {double} with delta {double}")
+    public void the_double_result_should_be_with_delta(double expected, double delta) {
+        assertEquals(expected, doubleResult, delta);
+    }
+
+    @When("I attempt to parse invalid double {string}")
+    public void i_attempt_to_parse_invalid_double(String input) {
+        try {
+            ByteParseUtil.parseDouble(input.getBytes(), 0, input.length());
+            thrownException = null;
+        } catch (ParseException e) {
+            thrownException = e;
+        }
+    }
+}
