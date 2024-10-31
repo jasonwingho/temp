@@ -1,0 +1,144 @@
+// MessageParserSteps.java
+// Basic imports
+import io.cucumber.java.Before;
+import io.cucumber.java.en.Given;
+import io.cucumber.java.en.Then;
+import io.cucumber.java.en.When;
+import org.junit.Assert;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
+// Project specific imports
+import com.baml.gdot.recall.objects.Order;
+import com.baml.gdot.recall.state.machine.order.OrderState;
+import com.baml.gdot.recall.amps.parser.MessageParser;
+import com.baml.gdot.recall.amps.parser.ParsingErrorException;
+import com.baml.gdot.recall.amps.MessageType;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class MessageParserSteps {
+    private static final Logger LOGGER = LoggerFactory.getLogger(MessageParserSteps.class);
+    
+    private MessageParser<Order> jsonParser;
+    private MessageParser<Order> nvfixParser;
+    private ObjectMapper objectMapper;
+    private String inputMessage;
+    private Order parsedOrder;
+    private String outputMessage;
+    private Exception thrownException;
+
+    @Before
+    public void setup() {
+        // Initialize ObjectMapper
+        objectMapper = new ObjectMapper();
+        objectMapper.registerModule(new JavaTimeModule());
+        
+        // Initialize parsers
+        jsonParser = new MessageParser<>(MessageType.JSON, Order.class);
+        nvfixParser = new MessageParser<>(MessageType.NVFIX, Order.class);
+    }
+
+    @Given("a message parser is initialized for Order class")
+    public void messageParserIsInitialized() {
+        assertNotNull(jsonParser);
+        assertNotNull(nvfixParser);
+    }
+
+    @Given("a JSON Order message:")
+    public void givenJsonOrderMessage(String message) {
+        inputMessage = message;
+    }
+
+    @Given("a NVFIX Order message:")
+    public void givenNvfixOrderMessage(String message) {
+        inputMessage = message;
+    }
+
+    @Given("an Order with values:")
+    public void givenOrder(Map<String, String> values) {
+        Order order = new Order();
+        order.setOrderID(values.get("orderID"));
+        order.setAccount(values.get("account"));
+        order.setOrdQty(Long.parseLong(values.get("ordQty")));
+        order.setOrderType(values.get("orderType"));
+        order.setOnBehalfOfCompID(values.get("onBehalfOfCompID"));
+        order.setTradeAllocIndicator(Integer.parseInt(values.get("tradeAllocIndicator")));
+        if (values.containsKey("currentState")) {
+            order.setCurrentState(OrderState.valueOf(values.get("currentState")));
+        }
+        if (values.containsKey("riskFillCategory")) {
+            order.setRiskFillCategory(values.get("riskFillCategory"));
+        }
+        parsedOrder = order;
+    }
+
+    @When("the message is parsed as JSON")
+    public void parseJsonMessage() {
+        try {
+            parsedOrder = jsonParser.parse(inputMessage);
+        } catch (Exception e) {
+            thrownException = e;
+        }
+    }
+
+    @When("the message is parsed as NVFIX")
+    public void parseNvfixMessage() {
+        try {
+            parsedOrder = nvfixParser.parse(inputMessage);
+        } catch (Exception e) {
+            thrownException = e;
+        }
+    }
+
+    @When("the Order is converted to JSON string")
+    public void convertToJsonString() {
+        outputMessage = jsonParser.toString(parsedOrder);
+    }
+
+    @When("the Order is converted to NVFIX string")
+    public void convertToNvfixString() {
+        outputMessage = nvfixParser.toString(parsedOrder);
+    }
+
+    @Then("the parsed Order should have orderID {string}")
+    public void verifyParsedOrderId(String expectedId) {
+        assertEquals(expectedId, parsedOrder.getOrderID());
+    }
+
+    @Then("the parsed Order should have state {string}")
+    public void verifyParsedOrderState(String expectedState) {
+        assertEquals(OrderState.valueOf(expectedState), parsedOrder.getCurrentState());
+    }
+
+    @Then("the parsed Order should have quantity {int}")
+    public void verifyParsedOrderQuantity(int expectedQuantity) {
+        assertEquals(expectedQuantity, parsedOrder.getOrdQty());
+    }
+
+    @Then("a ParsingErrorException should be thrown")
+    public void verifyParsingErrorException() {
+        assertNotNull(thrownException);
+        assertTrue(thrownException instanceof ParsingErrorException);
+    }
+}
+
+// CucumberTestRunner.java
+import io.cucumber.junit.Cucumber;
+import io.cucumber.junit.CucumberOptions;
+import org.junit.runner.RunWith;
+
+@RunWith(Cucumber.class)
+@CucumberOptions(
+    features = "src/test/resources/features",
+    glue = {"com.baml.gdot.recall.tests"},
+    plugin = {"pretty", "html:target/cucumber-reports"}
+)
+public class CucumberTestRunner {
+}
