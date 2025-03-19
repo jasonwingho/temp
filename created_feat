@@ -1,0 +1,213 @@
+Feature: Recovery of orders in Created state
+  As a system administrator
+  I want orders in Created state to be properly recovered
+  So that the system can maintain consistent state after restart
+
+  Background:
+    Given the system is in recovery mode
+    And the transaction logs are available
+
+  Scenario: Order in Created state is rebuilt
+    Given an order with ID "ORD-123" exists in transaction logs
+    And the order has state "Created" in RECALL/TICKET/HISTORY topic
+    When the recovery process runs for this order
+    Then the CreatedStateStrategy should handle the order
+    And the recovery action should be REBUILD
+    And the order should be rebuilt in the cache with state "New"
+    And no DFD request should be sent
+
+
+  Feature: Recovery of orders in Pending states
+  As a system administrator
+  I want orders in Pending states to be properly recovered
+  So that the system can maintain consistent state after restart
+
+  Background:
+    Given the system is in recovery mode
+    And the transaction logs are available
+
+  Scenario: Order with state mismatch in PendingNew state is republished
+    Given an order with ID "ORD-124" exists in transaction logs
+    And the order has state "PendingNew" in RECALL/TICKET/HISTORY topic
+    And the order has state "New" in RECALL/TO/OMS topic
+    When the recovery process runs for this order
+    Then the PendingStateStrategy should handle the order
+    And the recovery action should be REPUBLISH
+    And the ticket should be republished to RECALL/TICKET topic
+
+  Scenario: Order with newer response in PendingCancel state is ignored
+    Given an order with ID "ORD-125" exists in transaction logs
+    And the order has state "PendingCancel" in RECALL/TICKET/HISTORY topic
+    And the order has state "PendingCancel" in RECALL/TO/OMS topic with timestamp "2023-01-01T10:00:00Z"
+    And the order has state "Canceled" in OMS/TO/RECALL topic with timestamp "2023-01-01T10:01:00Z"
+    When the recovery process runs for this order
+    Then the PendingStateStrategy should handle the order
+    And the recovery action should be IGNORE
+    And no action should be taken for the order
+
+  Scenario: Order with consistent state in PendingFill state is rebuilt
+    Given an order with ID "ORD-126" exists in transaction logs
+    And the order has state "PendingFill" in RECALL/TICKET/HISTORY topic
+    And the order has state "PendingFill" in RECALL/TO/OMS topic
+    And the order has no entry in OMS/TO/RECALL topic
+    When the recovery process runs for this order
+    Then the PendingStateStrategy should handle the order
+    And the recovery action should be REBUILD
+    And the order should be rebuilt in the cache with state "PendingFill"
+    And the ExecutionReport from RECALL/TO/OMS should be attached to the order
+
+
+
+Feature: Recovery of orders in Final states
+  As a system administrator
+  I want orders in Final states to be properly recovered
+  So that the system can maintain consistent state after restart
+
+  Background:
+    Given the system is in recovery mode
+    And the transaction logs are available
+
+  Scenario: Order in New state is rebuilt
+    Given an order with ID "ORD-127" exists in transaction logs
+    And the order has state "New" in RECALL/TICKET/HISTORY topic
+    And the order has state "New" in OMS/TO/RECALL topic
+    When the recovery process runs for this order
+    Then the FinalStateStrategy should handle the order
+    And the recovery action should be REBUILD
+    And the order should be rebuilt in the cache with state "New"
+
+  Scenario: Order in Canceled state with state mismatch is still rebuilt
+    Given an order with ID "ORD-128" exists in transaction logs
+    And the order has state "Canceled" in RECALL/TICKET/HISTORY topic
+    And the order has state "PendingCancel" in OMS/TO/RECALL topic
+    When the recovery process runs for this order
+    Then the FinalStateStrategy should handle the order
+    And the recovery action should be REBUILD with warning about state mismatch
+    And the order should be rebuilt in the cache with state "Canceled"
+
+  Scenario: Order in Filled state with missing OMS response is still rebuilt
+    Given an order with ID "ORD-129" exists in transaction logs
+    And the order has state "Filled" in RECALL/TICKET/HISTORY topic
+    And the order has no entry in OMS/TO/RECALL topic
+    When the recovery process runs for this order
+    Then the FinalStateStrategy should handle the order
+    And the recovery action should be REBUILD with warning about missing OMS response
+    And the order should be rebuilt in the cache with state "Filled"
+
+Feature: DFD Request handling during recovery
+  As a system administrator
+  I want DFD requests to be sent for appropriate transitions during recovery
+  So that the system's state is accurately reflected
+
+  Background:
+    Given the system is in recovery mode
+    And the transaction logs are available
+
+  Scenario: DFD request sent for PendingFill to Filled transition
+    Given an order with ID "ORD-130" exists in transaction logs
+    And the order has state "PendingFill" in RECALL/TICKET/HISTORY topic
+    And the order has state "Filled" in OMS/TO/RECALL topic
+    And the OMS/TO/RECALL entry has execType "2" (Filled)
+    When the recovery process runs for this order
+    Then the order should be rebuilt in the cache with state "Filled"
+    And a DFD request should be sent to RECALL/TO/OMS topic
+
+  Scenario: DFD request sent for PendingCancel to Canceled transition
+    Given an order with ID "ORD-131" exists in transaction logs
+    And the order has state "PendingCancel" in RECALL/TICKET/HISTORY topic
+    And the order has state "Canceled" in OMS/TO/RECALL topic
+    And the OMS/TO/RECALL entry has execType "4" (Canceled)
+    When the recovery process runs for this order
+    Then the order should be rebuilt in the cache with state "Canceled"
+    And a DFD request should be sent to RECALL/TO/OMS topic
+
+
+
+Feature: Default recovery strategy for unhandled states
+  As a system administrator
+  I want a fallback strategy for orders in unexpected states
+  So that the system can handle all possible scenarios
+
+  Background:
+    Given the system is in recovery mode
+    And the transaction logs are available
+
+  Scenario: Order with unknown state uses default strategy
+    Given an order with ID "ORD-132" exists in transaction logs
+    And the order has state "UnknownState" in RECALL/TICKET/HISTORY topic
+    When the recovery process runs for this order
+    Then the DefaultRecoveryStrategy should handle the order
+    And the recovery action should be REBUILD with warning about unknown state
+    And the order should be rebuilt in the cache with state "UnknownState"
+
+
+
+Feature: End-to-end recovery process
+  As a system administrator
+  I want the entire recovery process to work correctly
+  So that the system can recover from failures
+
+  Background:
+    Given the system is in recovery mode
+    And transaction logs contain multiple orders in different states
+
+  Scenario: Recovery process rebuilds all orders in correct states
+    When the recovery process runs for all orders
+    Then all orders should be recovered with appropriate actions
+    And recovery statistics should show accurate counts for each action type
+    And all orders should be in correct states in the cache
+
+  Scenario: Recovery process handles errors gracefully
+    Given some transaction log entries are corrupted
+    When the recovery process runs for all orders
+    Then valid orders should be recovered correctly
+    And errors should be logged for corrupted entries
+    And the recovery process should continue for remaining orders
+
+
+Feature: Transaction log reconstruction
+  As a system administrator
+  I want transaction logs to be correctly reconstructed from topic data
+  So that recovery decisions are based on accurate information
+
+  Background:
+    Given the system is starting up
+    And AMPS topics contain historical message data
+
+  Scenario: Transaction logs are reconstructed from all topics
+    When the transaction log reconstruction process runs
+    Then the transaction logs should contain entries from RECALL/TICKET/HISTORY topic
+    And the transaction logs should contain entries from RECALL/TO/OMS topic
+    And the transaction logs should contain entries from OMS/TO/RECALL topic
+    And each order should have a chronologically ordered log of events
+
+  Scenario: Transaction log entries preserve message content
+    When the transaction log reconstruction process runs
+    Then each entry should preserve the original message content
+    And RecallTicket objects should be retrievable from RECALL/TICKET/HISTORY entries
+    And Order objects should be retrievable from RECALL/TO/OMS entries
+    And ExecutionReport objects should be retrievable from OMS/TO/RECALL entries
+
+
+Feature: Recovery context creation
+  As a system component
+  I want recovery contexts to be correctly created from transaction logs
+  So that recovery strategies have accurate information
+
+  Scenario: Recovery context contains the latest entry from each topic
+    Given transaction logs exist for order "ORD-133"
+    And the logs contain multiple entries for each topic
+    When a recovery context is created for the order
+    Then the context should contain the latest entry from RECALL/TICKET/HISTORY
+    And the context should contain the latest entry from RECALL/TO/OMS
+    And the context should contain the latest entry from OMS/TO/RECALL
+
+  Scenario: Recovery context handles missing topic entries
+    Given transaction logs exist for order "ORD-134"
+    And the logs contain entries only for RECALL/TICKET/HISTORY
+    When a recovery context is created for the order
+    Then the context should contain the entry from RECALL/TICKET/HISTORY
+    And the context should have null values for RECALL/TO/OMS
+    And the context should have null values for OMS/TO/RECALL
+
+                                                    
