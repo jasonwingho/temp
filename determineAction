@@ -1,0 +1,70 @@
+@Override
+public RecoveryActionType determineAction(RecoveryContext context) {
+    String historyState = context.getHistoryState();
+    String omsRequestState = context.getOmsRequestState();
+    String omsResponseState = context.getOmsResponseState();
+    
+    // Scenario 1: If state mismatch between history and request, republish to RECALL/TICKET
+    if (!context.omsRequestStateMatchesHistory()) {
+        LOGGER.info("State mismatch for order {} in pending state: RECALL/TICKET/HISTORY={}, RECALL/TO/OMS={} - will republish", 
+            context.getOrderId(), historyState, omsRequestState);
+        return RecoveryActionType.REPUBLISH;
+    }
+    
+    // New scenario: Check specific state combinations between all three topics
+    if (omsResponseState != null) {
+        RecallTicket ticket = context.getTicket();
+        TransactionLogEntry responseEntry = context.getResponseEntry();
+        
+        if (ticket == null || responseEntry == null) {
+            LOGGER.warn("Order {} is missing ticket or response entry", context.getOrderId());
+            return RecoveryActionType.REBUILD;
+        }
+        
+        // Get quantities for comparison
+        long ticketRecallQty = ticket.getRecallQty();
+        long ticketFillQty = ticket.getFillQty();
+        
+        // Get quantities from response entry
+        long responseRecallQty = responseEntry.getRecallQty();
+        long responseFillQty = responseEntry.getFillQty();
+        
+        // Case 1: PendingNew in history and request, but New or Reject in response
+        if ("PendingNew".equals(historyState) && "PendingNew".equals(omsRequestState) && 
+            ("New".equals(omsResponseState) || "Reject".equals(omsResponseState))) {
+            
+            if (ticketRecallQty == responseRecallQty) {
+                LOGGER.info("Order {} is in PendingNew state in history and request, but {} in response with matching recall qty - will republish", 
+                    context.getOrderId(), omsResponseState);
+                return RecoveryActionType.REPUBLISH;
+            }
+        }
+        
+        // Case 2: PendingCancel in history and request, but Cancelled or Reject in response
+        if ("PendingCancel".equals(historyState) && "PendingCancel".equals(omsRequestState) && 
+            ("Canceled".equals(omsResponseState) || "Reject".equals(omsResponseState))) {
+            
+            if (ticketRecallQty == responseRecallQty) {
+                LOGGER.info("Order {} is in PendingCancel state in history and request, but {} in response with matching recall qty - will republish", 
+                    context.getOrderId(), omsResponseState);
+                return RecoveryActionType.REPUBLISH;
+            }
+        }
+        
+        // Case 3: PendingFill in history and request, but Filled or PartiallyFilled in response
+        if ("PendingFill".equals(historyState) && "PendingFill".equals(omsRequestState) && 
+            ("Filled".equals(omsResponseState) || "PartiallyFilled".equals(omsResponseState))) {
+            
+            if (ticketRecallQty == responseRecallQty && ticketFillQty == responseFillQty) {
+                LOGGER.info("Order {} is in PendingFill state in history and request, but {} in response with matching recall and fill qty - will republish", 
+                    context.getOrderId(), omsResponseState);
+                return RecoveryActionType.REPUBLISH;
+            }
+        }
+    }
+    
+    // Default case: rebuild
+    LOGGER.debug("Order {} in pending state {} with consistent state - rebuilding", 
+        context.getOrderId(), historyState);
+    return RecoveryActionType.REBUILD;
+}
