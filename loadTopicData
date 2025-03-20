@@ -1,0 +1,86 @@
+/**
+ * Loads data from an AMPS topic into the transaction log.
+ * This method uses function parameters to extract additional fields needed for order reconstruction.
+ *
+ * @param client The AMPS client to use
+ * @param topicName The topic name to load from
+ * @param bindingType The binding type to use
+ * @param messageType The message type
+ * @param sourceIdentifier The source identifier for transaction log entries
+ * @param idExtractor Function to extract the order ID from a message
+ * @param stateExtractor Function to extract the state from a message
+ * @param timestampExtractor Function to extract the timestamp from a message
+ * @param recallQtyExtractor Function to extract the recall quantity from a message
+ * @param fillQtyExtractor Function to extract the fill quantity from a message
+ * @param fillPriceExtractor Function to extract the fill price from a message
+ * @param execIdExtractor Function to extract the execution ID from a message
+ * @param execTypeExtractor Function to extract the execution type from a message
+ * @param <T> The type of message
+ */
+private <T> void loadTopicData(
+    HAAmpsClient client,
+    String topicName,
+    String bindingType,
+    MessageType messageType,
+    String sourceIdentifier,
+    Function<T, String> idExtractor,
+    Function<T, String> stateExtractor,
+    Function<T, Instant> timestampExtractor,
+    Function<T, Long> recallQtyExtractor,
+    Function<T, Long> fillQtyExtractor,
+    Function<T, Double> fillPriceExtractor,
+    Function<T, String> execIdExtractor,
+    Function<T, Character> execTypeExtractor) {
+
+    try {
+        LOGGER.info("Loading data from {} topic", topicName);
+        
+        TypedHandler<T> handler = new TypedHandler<>(
+            (TypedBinder<T>) TypeBinderFactory.getTypeBinder(bindingType, messageType)) {
+            
+            @Override
+            public void onMessage(T message) {
+                if (message != null) {
+                    String orderId = idExtractor.apply(message);
+                    if (orderId != null) {
+                        // Create the transaction log entry with all fields
+                        TransactionLogEntry entry = TransactionLogEntry.Builder.builder()
+                            .orderId(orderId)
+                            .source(sourceIdentifier)
+                            .state(stateExtractor.apply(message))
+                            .timestamp(timestampExtractor.apply(message))
+                            .message(message)
+                            .recallQty(recallQtyExtractor.apply(message))
+                            .fillQty(fillQtyExtractor.apply(message))
+                            .fillPrice(fillPriceExtractor.apply(message))
+                            .executionId(execIdExtractor.apply(message))
+                            .execType(execTypeExtractor.apply(message))
+                            .build();
+                        
+                        // Add to transaction log for this order
+                        synchronized(transactionLogs) {
+                            List<TransactionLogEntry> entries = transactionLogs.computeIfAbsent(
+                                orderId, k -> Collections.synchronizedList(new ArrayList<>()));
+                            
+                            synchronized(entries) {
+                                entries.add(entry);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            @Override
+            public void endOfSow(com.crankuptheamps.client.Message msg) {
+                LOGGER.info("{} loading completed", topicName);
+                initLatch.countDown();
+            }
+        };
+        
+        client.snap(topicName, "", handler);
+        
+    } catch (Exception e) {
+        LOGGER.error("Error loading {} data", topicName, e);
+        initLatch.countDown(); // Ensure latch is counted down even on error
+    }
+}
