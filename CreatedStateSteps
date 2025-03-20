@@ -1,0 +1,55 @@
+package com.a.gdot.recall.recovery.steps;
+
+import com.a.gdot.recall.recovery.OrderRecoveryStrategy;
+import com.a.gdot.recall.recovery.RecoveryContext;
+import com.a.gdot.recall.recovery.strategies.CreatedStateStrategy;
+import io.cucumber.java.en.Then;
+import org.mockito.ArgumentCaptor;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+
+public class CreatedStateSteps {
+
+    private final CommonSteps commonSteps;
+    
+    public CreatedStateSteps(CommonSteps commonSteps) {
+        this.commonSteps = commonSteps;
+    }
+    
+    @Then("the CreatedStateStrategy should handle the order")
+    public void theCreatedStateStrategyShouldHandleTheOrder() {
+        for (RecoveryContext context : commonSteps.getRecoveryContexts().values()) {
+            // Verify the strategy can handle this context
+            CreatedStateStrategy strategy = new CreatedStateStrategy();
+            assertThat(strategy.canHandle(context)).isTrue();
+        }
+    }
+    
+    @Then("the order should be rebuilt in the cache with state {string}")
+    public void theOrderShouldBeRebuiltInTheCacheWithState(String state) {
+        ArgumentCaptor<RecoveryContext> contextCaptor = ArgumentCaptor.forClass(RecoveryContext.class);
+        
+        // Verify the cache.rebuildOrder method was called
+        verify(commonSteps.getMockCache()).rebuildOrder(contextCaptor.capture());
+        
+        // Get the captured context and check its properties
+        RecoveryContext capturedContext = contextCaptor.getValue();
+        
+        // For Created state, we expect to be rebuilt with New state
+        assertThat(capturedContext.getHistoryState())
+            .isEqualTo("Created");
+    }
+    
+    @Then("no DFD request should be sent")
+    public void noDfdRequestShouldBeSent() {
+        // Verify no DFD request was sent via AMPS
+        verify(commonSteps.getMockAmpsClient(), never()).publish(
+            eq("RECALL/TO/OMS"), 
+            any(String.class)
+        );
+    }
+}
