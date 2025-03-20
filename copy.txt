@@ -366,3 +366,82 @@ private OrderState mapTicketStateToOrderState(String ticketState) {
         return OrderState.New;
     }
 }
+
+-----
+/**
+ * Validates and potentially adjusts the final state of an order.
+ * This handles special cases and ensures consistency.
+ *
+ * @param order The order to validate
+ * @param ticket The recall ticket
+ * @param entriesCopy The sorted list of transaction log entries
+ */
+private void validateAndAdjustFinalState(Order order, RecallTicket ticket, List<TransactionLogEntry> entriesCopy) {
+    if (order == null || ticket == null) {
+        LOGGER.error("Cannot validate null order or ticket");
+        return;
+    }
+    
+    OrderState currentState = order.getCurrentState();
+    String historyState = ticket.getCurrentState();
+    OrderState historyOrderState = mapTicketStateToOrderState(historyState);
+    
+    // If states don't match, log warning and use history state
+    if (!currentState.equals(historyOrderState)) {
+        LOGGER.warn("State mismatch for order {}: calculated={}, history={} - using history state",
+            order.getOrderID(), currentState, historyOrderState);
+        order.setCurrentState(historyOrderState);
+    }
+    
+    // Find the latest entry for each topic to ensure consistency
+    TransactionLogEntry latestTicketEntry = findLatestEntryFromSource(entriesCopy, "RECALL/TICKET/HISTORY");
+    TransactionLogEntry latestRequestEntry = findLatestEntryFromSource(entriesCopy, "RECALL/TO/OMS");
+    TransactionLogEntry latestResponseEntry = findLatestEntryFromSource(entriesCopy, "OMS/TO/RECALL");
+    
+    // Special validation for PendingFill orders
+    if (OrderState.PendingFill.equals(order.getCurrentState()) && order.getFillRequest() == null) {
+        LOGGER.warn("PendingFill order {} has no ExecutionReport - creating default", order.getOrderID());
+        
+        // Try to get information from the latest entries
+        ExecutionReport report = ExecutionReport.generateDummyExecution(order);
+        
+        // Update with information from log entries if available
+        if (latestRequestEntry != null) {
+            report.setLastQty(latestRequestEntry.getFillQty());
+            report.setCumQty(latestRequestEntry.getFillQty());
+            report.setLastPrice(latestRequestEntry.getFillPrice());
+            report.setAvgPrice(latestRequestEntry.getFillPrice());
+            report.setLeavesQty(latestRequestEntry.getRecallQty() - latestRequestEntry.getFillQty());
+        } else if (ticket != null) {
+            report.setLastQty(ticket.getFillQty());
+            report.setCumQty(ticket.getFillQty());
+            report.setLastPrice(ticket.getFillPrice());
+            report.setAvgPrice(ticket.getFillPrice());
+            report.setLeavesQty(ticket.getRecallQty() - ticket.getFillQty());
+        }
+        
+        order.setFillRequest(report);
+    }
+    
+    // Special validation for PendingCancel/PendingReplace orders
+    if ((OrderState.PendingCancel.equals(order.getCurrentState()) || 
+         OrderState.PendingReplace.equals(order.getCurrentState())) && 
+        order.getAmendRequest() == null) {
+        
+        LOGGER.warn("{} order {} has no AmendRequest - creating default", 
+            order.getCurrentState(), order.getOrderID());
+        
+        // Create a new amend request using the most accurate information available
+        String newId = UUID.randomUUID().toString();
+        long recallQty = ticket.getRecallQty();
+        double fillPrice = ticket.getFillPrice();
+        
+        // If we have more accurate information from log entries, use it
+        if (latestRequestEntry != null) {
+            recallQty = latestRequestEntry.getRecallQty();
+            fillPrice = latestRequestEntry.getFillPrice();
+        }
+        
+        order.setAmendRequest(new AmendRequest(recallQty, fillPrice, newId, order.getOrderID()));
+    }
+}
