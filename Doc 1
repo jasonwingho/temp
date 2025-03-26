@@ -1,0 +1,51 @@
+Based on the code in the project, I'll analyze how RecallTicket objects create OrderEvents through the OrderEventFactory, and then show the available transitions between OrderStates as determined by the TransitionManager.
+
+## RecallTicket to OrderEvent Mapping
+
+The `OrderEventFactory.createEvent()` method is responsible for converting RecallTicket states into appropriate OrderEvents. Here's a table showing this mapping:
+
+| RecallTicket State | Created OrderEvent Type | Description |
+|--------------------|------------------------|-------------|
+| PendingNew | NewOrderRequestEvent | When a new recall ticket is first received with "PendingNew" state |
+| PendingFill | OrderFillRequestEvent | Generates a fill request with fill details from the ticket |
+| PendingReplace | OrderUpdateRequestEvent | Creates an order update with new quantity from ticket |
+| PendingCancel | OrderCancelRequestEvent | Creates a cancellation request for the order |
+
+## Order State Transitions
+
+The TransitionManager in the project defines valid state transitions between different OrderStates based on received OrderEvents. Here's a comprehensive table showing the available transitions:
+
+| Current State | Event Type | Target State | Notes |
+|---------------|------------|--------------|-------|
+| New | NewOrderRequestEvent | PendingNew | Initial creation of order |
+| New | OrderUpdateRequestEvent | PendingReplace | Request to modify order |
+| New | OrderCancelRequestEvent | PendingCancel | Request to cancel order |
+| New | OrderFillRequestEvent | PendingFill | Request to fill order |
+| New | OrderRejectEvent | Reject | Order rejection |
+| New | OrderUnsolicitedCancelEvent | Canceled | Unexpected cancellation |
+| PendingNew | NewOrderAcceptEvent | New | Order creation confirmed |
+| PendingNew | OrderRejectEvent | Reject | Order creation rejected |
+| PendingReplace | OrderUpdateAcceptEvent | Replaced | Order update confirmed |
+| PendingReplace | OrderUpdateAckEvent | PendingReplace | Acknowledgment of update request |
+| PendingReplace | OrderRejectEvent | New | Order update rejected |
+| PendingCancel | OrderCancelAcceptEvent | Canceled | Order cancellation confirmed |
+| PendingCancel | OrderCancelAckEvent | PendingCancel | Acknowledgment of cancel request |
+| PendingCancel | OrderRejectEvent | New | Order cancellation rejected |
+| PendingFill | OrderFillAcceptEvent | PartiallyFilled | Order partially filled |
+| PendingFill | OrderFillAcceptEvent | Filled | Order completely filled |
+| PendingFill | OrderRejectEvent | New | Order fill rejected |
+| PendingFill | OrderDoneForDayRequestEvent | PendingDoneOfDay | Request to mark order as done for day |
+| PartiallyFilled | OrderFillAcceptEvent | PartiallyFilled/Filled | Additional fill (partial or complete) |
+| PartiallyFilled | OrderDoneForDayRequestEvent | PendingDoneOfDay | Request to mark partially filled order as done |
+| Filled | OrderDoneForDayRequestEvent | PendingDoneOfDay | Request to mark filled order as done |
+| Replaced | OrderUpdateRequestEvent | PendingReplace | Request to modify already replaced order |
+| Replaced | OrderCancelRequestEvent | PendingCancel | Request to cancel replaced order |
+| Replaced | OrderFillRequestEvent | PendingFill | Request to fill replaced order |
+| PendingDoneOfDay | OrderDoneForDayAcceptEvent | DoneOfDay | Confirmation of done for day status |
+
+The code also handles other events and error conditions, such as:
+- OrderUnsolicitedCancelEvent: Can move an order to Canceled state
+- Default rejection behaviors for unsupported transitions
+- OrderCancelAckEvent and OrderUpdateAckEvent intermediary acknowledgements
+
+These transitions form the core state machine that drives the order lifecycle in the recall system. Particularly important is how recall tickets in PendingFill state generate fill requests with quantity and price information that is tracked through the system.
