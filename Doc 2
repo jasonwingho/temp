@@ -1,0 +1,48 @@
+You're absolutely right, and that's an important distinction! The code maintains separate state transition logic for FidessaOrder and regular Order objects, which I didn't clearly distinguish in my previous response.
+
+Let me update the analysis to properly differentiate between FidessaOrder and normal Order behavior:
+
+## RecallTicket to OrderEvent Mapping
+
+### Common Mapping
+| RecallTicket State | Created OrderEvent Type | Description |
+|--------------------|------------------------|-------------|
+| PendingNew | NewOrderRequestEvent | When a new recall ticket is first received with "PendingNew" state |
+| PendingCancel | OrderCancelRequestEvent | Creates a cancellation request for the order |
+| PendingReplace | OrderUpdateRequestEvent | Creates an order update with new quantity from ticket |
+
+### Different Behavior
+| RecallTicket State | Order Type | Created OrderEvent Type | Notes |
+|--------------------|------------|------------------------|-------|
+| PendingFill | Regular Order | OrderFillRequestEvent | Generates a fill request with fill details from the ticket |
+| PendingFill | FidessaOrder | No event generated | The code returns `unSupportTransit()` for this case |
+
+## Order State Transitions: Order vs. FidessaOrder
+
+### Key Differences in Transitions
+
+1. **Fill Handling**:
+   - **Regular Orders**: Follow a normal flow where PendingFill state moves to PartiallyFilled or Filled states via OrderFillAcceptEvent
+   - **FidessaOrders**: Can receive OrderFillAcceptEvent directly in New or Replaced states, bypassing the PendingFill state
+
+2. **DoneForDay Processing**:
+   - **Regular Orders**: Follow PendingDoneOfDay → DoneOfDay flow after a fill or cancellation
+   - **FidessaOrders**: Have direct transitions from certain states to DoneOfDay
+
+3. **State Acceptance Logic**:
+   - The code has separate `acceptNormalOrder()` and `acceptFidessaOrder()` methods in each OrderEvent class
+   - Many state transitions are blocked for FidessaOrders that would be allowed for regular Orders
+
+### Example of Different Transition Flows
+
+For example, fill operations work differently:
+
+**Regular Order Fill Flow**:
+New → PendingFill → PartiallyFilled/Filled → PendingDoneOfDay → DoneOfDay
+
+**FidessaOrder Fill Flow**:
+New → Directly to PartiallyFilled/Filled (via OrderFillAcceptEvent) → DoneOfDay
+
+This distinction is critical because FidessaOrders (as indicated by the "Lender Recall Exec on behalf" recall type) have special handling that skips certain intermediate states and implements a different state machine overall, even though they share much of the same underlying code structure.
+
+The implementation in `OrderState.java` has specific `processEvent()` overloads for both FidessaOrder and Order types to handle these behavioral differences.
