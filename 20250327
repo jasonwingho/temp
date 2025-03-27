@@ -1,0 +1,155 @@
+// File: src/test/resources/features/MessageParserHybridFormat.feature
+Feature: Message Parser Hybrid Format Handling
+  As a developer
+  I want to ensure the MessageParser can parse hybrid format messages
+  So that the system can process JSON + metadata correctly
+
+  Scenario: Parse a JSON message with metadata
+    Given a hybrid format message with JSON and metadata
+    When I parse the message using MessageParser
+    Then the object should have the correct values from JSON content
+    And the object should have the correct values from metadata
+
+// File: src/test/java/com/baml/gdot/recall/amps/parser/MessageParserHybridFormatSteps.java
+package com.baml.gdot.recall.amps.parser;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+
+import com.baml.gdot.commons.amps.MessageType;
+import com.baml.gdot.recall.entity.RecallTicket;
+import io.cucumber.java.en.Given;
+import io.cucumber.java.en.Then;
+import io.cucumber.java.en.When;
+import java.time.ZonedDateTime;
+
+public class MessageParserHybridFormatSteps {
+
+    private String hybridMessage;
+    private RecallTicket parsedTicket;
+    private MessageParser<RecallTicket> parser;
+
+    @Given("a hybrid format message with JSON and metadata")
+    public void a_hybrid_format_message_with_json_and_metadata() {
+        // Create a hybrid message with JSON content and SOH-delimited metadata
+        // SOH character represented as \u0001
+        hybridMessage = "{" +
+                "\"id\":\"TEST123\"," +
+                "\"reqId\":\"REQ-123\"," +
+                "\"currentState\":\"New\"," +
+                "\"requestor\":\"TestUser\"," +
+                "\"ticker\":\"AAPL\"," +
+                "\"recallQty\":100," +
+                "\"fillQty\":0," +
+                "\"fillPrice\":0.0" +
+                "}" +
+                "\u0001AMPSSTAMP=20250321T135819.46352672Z\u0001" +
+                "AMPSRECEIVED=1742855099463\u0001" + 
+                "SEQUENCE=12345\u0001" + 
+                "SOURCE=TestSource";
+        
+        // Initialize the parser for RecallTicket class
+        parser = new MessageParser<>(MessageType.JSON, RecallTicket.class);
+    }
+
+    @When("I parse the message using MessageParser")
+    public void i_parse_the_message_using_message_parser() throws Exception {
+        // Use reflection to access the private method for testing
+        java.lang.reflect.Method parseMethod = MessageParser.class.getDeclaredMethod("parseHybridFormat", String.class);
+        parseMethod.setAccessible(true);
+        
+        parsedTicket = (RecallTicket) parseMethod.invoke(parser, hybridMessage);
+    }
+
+    @Then("the object should have the correct values from JSON content")
+    public void the_object_should_have_the_correct_values_from_json_content() {
+        assertNotNull("Parsed ticket should not be null", parsedTicket);
+        assertEquals("TEST123", parsedTicket.getId());
+        assertEquals("REQ-123", parsedTicket.getReqId());
+        assertEquals("New", parsedTicket.getCurrentState());
+        assertEquals("TestUser", parsedTicket.getRequestor());
+        assertEquals("AAPL", parsedTicket.getTicker());
+        assertEquals(100, parsedTicket.getRecallQty());
+        assertEquals(0, parsedTicket.getFillQty());
+        assertEquals(0.0, parsedTicket.getFillPrice(), 0.001);
+    }
+
+    @Then("the object should have the correct values from metadata")
+    public void the_object_should_have_the_correct_values_from_metadata() {
+        assertNotNull("Parsed ticket should not be null", parsedTicket);
+        assertEquals("20250321T135819.46352672Z", parsedTicket.getAmpsStamp());
+        assertEquals(1742855099463L, parsedTicket.getAmpsReceived());
+    }
+}
+
+// File: src/test/java/com/baml/gdot/recall/amps/parser/MessageParserTest.java
+package com.baml.gdot.recall.amps.parser;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+
+import com.baml.gdot.commons.amps.MessageType;
+import com.baml.gdot.recall.entity.RecallTicket;
+import org.junit.Test;
+
+public class MessageParserTest {
+
+    @Test
+    public void testParseHybridFormat() throws Exception {
+        // Create a hybrid message with JSON content and SOH-delimited metadata
+        String hybridMessage = "{" +
+                "\"id\":\"TEST123\"," +
+                "\"reqId\":\"REQ-123\"," +
+                "\"currentState\":\"New\"," +
+                "\"requestor\":\"TestUser\"," +
+                "\"ticker\":\"AAPL\"," +
+                "\"recallQty\":100," +
+                "\"fillQty\":0," +
+                "\"fillPrice\":0.0" +
+                "}" +
+                "\u0001AMPSSTAMP=20250321T135819.46352672Z\u0001" +
+                "AMPSRECEIVED=1742855099463\u0001" + 
+                "SEQUENCE=12345\u0001" + 
+                "SOURCE=TestSource";
+
+        MessageParser<RecallTicket> parser = new MessageParser<>(MessageType.JSON, RecallTicket.class);
+        
+        // Use reflection to access the private method for testing
+        java.lang.reflect.Method parseMethod = MessageParser.class.getDeclaredMethod("parseHybridFormat", String.class);
+        parseMethod.setAccessible(true);
+        
+        RecallTicket parsedTicket = (RecallTicket) parseMethod.invoke(parser, hybridMessage);
+        
+        // Verify JSON content
+        assertNotNull(parsedTicket);
+        assertEquals("TEST123", parsedTicket.getId());
+        assertEquals("REQ-123", parsedTicket.getReqId());
+        assertEquals("New", parsedTicket.getCurrentState());
+        assertEquals("TestUser", parsedTicket.getRequestor());
+        assertEquals("AAPL", parsedTicket.getTicker());
+        assertEquals(100, parsedTicket.getRecallQty());
+        assertEquals(0, parsedTicket.getFillQty());
+        assertEquals(0.0, parsedTicket.getFillPrice(), 0.001);
+        
+        // Verify metadata
+        assertEquals("20250321T135819.46352672Z", parsedTicket.getAmpsStamp());
+        assertEquals(1742855099463L, parsedTicket.getAmpsReceived());
+    }
+}
+
+// File: src/test/java/com/baml/gdot/recall/amps/parser/CucumberTestRunner.java
+package com.baml.gdot.recall.amps.parser;
+
+import org.junit.runner.RunWith;
+import io.cucumber.junit.Cucumber;
+import io.cucumber.junit.CucumberOptions;
+
+@RunWith(Cucumber.class)
+@CucumberOptions(
+    features = "src/test/resources/features",
+    glue = {"com.baml.gdot.recall.amps.parser"},
+    plugin = {"pretty", "html:target/cucumber-reports"}
+)
+public class CucumberTestRunner {
+    // This class should be empty
+}
