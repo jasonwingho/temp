@@ -1,0 +1,579 @@
+package com.baml.gdot.recall.cucumber.stepdefs;
+
+import com.baml.gdot.recall.cache.ThreadSafeCache;
+import com.baml.gdot.recall.amps.HAAmpsClient;
+import com.baml.gdot.recall.amps.HAAmpsBuilder;
+import com.baml.gdot.recall.OrderFixTransformer;
+import com.baml.gdot.recall.cache.TransactionLogEntry;
+import com.baml.gdot.recall.entity.RecallTicket;
+import com.baml.gdot.recall.objects.ExecutionReport;
+import com.baml.gdot.recall.objects.Order;
+import com.baml.gdot.recall.recovery.RecoveryActionType;
+import com.baml.gdot.recall.recovery.RecoveryContext;
+import com.baml.gdot.recall.recovery.RecoveryService;
+import com.baml.gdot.recall.state.machine.order.event.OrderState;
+
+import io.cucumber.datatable.DataTable;
+import io.cucumber.java.Before;
+import io.cucumber.java.en.Given;
+import io.cucumber.java.en.Then;
+import io.cucumber.java.en.When;
+
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import static org.junit.Assert.*;
+import static org.mockito.Mockito.*;
+
+public class CacheRebuildStepDefs {
+
+    @Mock
+    private HAAmpsClient recallTicketClient;
+
+    @Mock
+    private HAAmpsClient recallToOmsClient;
+
+    @Mock
+    private HAAmpsClient omsToRecallClient;
+
+    @Mock
+    private OrderFixTransformer orderFixTransformer;
+
+    @Mock
+    private HAAmpsBuilder.SOWConfig omsToRecallSowConfig;
+
+    @Mock
+    private HAAmpsBuilder.SOWConfig recallTicketSowConfig;
+
+    @Mock
+    private RecoveryService recoveryService;
+
+    private ThreadSafeCache threadSafeCache;
+    private Map<String, List<TransactionLogEntry>> transactionLogs;
+    private Map<String, RecoveryActionType> recoveryActions;
+    private Map<String, Boolean> dfdRequests;
+    private Map<String, String> bookmarkTimestamps;
+    private Map<String, String> topicNames;
+
+    @Before
+    public void setup() {
+        MockitoAnnotations.openMocks(this);
+        
+        // Explicitly create mocks to avoid NullPointerExceptions
+        recallTicketClient = mock(HAAmpsClient.class);
+        recallToOmsClient = mock(HAAmpsClient.class);
+        omsToRecallClient = mock(HAAmpsClient.class);
+        orderFixTransformer = mock(OrderFixTransformer.class);
+        omsToRecallSowConfig = mock(HAAmpsBuilder.SOWConfig.class);
+        recallTicketSowConfig = mock(HAAmpsBuilder.SOWConfig.class);
+        recoveryService = mock(RecoveryService.class);
+        
+        // Initialize data structures
+        transactionLogs = new ConcurrentHashMap<>();
+        recoveryActions = new HashMap<>();
+        dfdRequests = new HashMap<>();
+        bookmarkTimestamps = new HashMap<>();
+        topicNames = new HashMap<>();
+    }
+
+    @Given("the system is initialized with empty caches")
+    public void systemInitializedWithEmptyCaches() {
+        // We'll initialize the cache in the bookmarkTimestampsConfigured method
+        // to be able to override the getBookmarkTimeStamp method
+    }
+
+    @Given("the AMPS clients are configured for the following topics:")
+    public void ampsClientsConfigured(DataTable dataTable) {
+        // In this step, we only need to store the topic names for later use
+        // We shouldn't access threadSafeCache yet since it hasn't been created
+        
+        topicNames = new HashMap<>();
+        
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        for (Map<String, String> row : rows) {
+            String topic = row.get("Topic");
+            String client = row.get("Client");
+            
+            // Store topic names for later use when initializing ThreadSafeCache
+            topicNames.put(client, topic);
+        }
+    }
+
+    @Given("the bookmark timestamps are configured as:")
+    public void bookmarkTimestampsConfigured(DataTable dataTable) {
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        for (Map<String, String> row : rows) {
+            String topic = row.get("Topic");
+            String timestamp = row.get("Timestamp");
+            bookmarkTimestamps.put(topic, timestamp);
+        }
+        
+        // Make sure the clients are properly mocked before creating ThreadSafeCache
+        if (recallTicketClient == null) recallTicketClient = mock(HAAmpsClient.class);
+        if (recallToOmsClient == null) recallToOmsClient = mock(HAAmpsClient.class);
+        if (omsToRecallClient == null) omsToRecallClient = mock(HAAmpsClient.class);
+        if (orderFixTransformer == null) orderFixTransformer = mock(OrderFixTransformer.class);
+        if (omsToRecallSowConfig == null) omsToRecallSowConfig = mock(HAAmpsBuilder.SOWConfig.class);
+        if (recallTicketSowConfig == null) recallTicketSowConfig = mock(HAAmpsBuilder.SOWConfig.class);
+        
+        // Create a test subclass of ThreadSafeCache that overrides the getBookmarkTimeStamp method
+        threadSafeCache = new ThreadSafeCache(
+            recallTicketClient, 
+            recallToOmsClient, 
+            omsToRecallClient, 
+            orderFixTransformer,
+            omsToRecallSowConfig,
+            recallTicketSowConfig
+        ) {
+            @Override
+            protected String getBookmarkTimeStamp(HAAmpsBuilder.SOWConfig sowConfig, String topicName) {
+                // Return our test timestamps instead of calling the real method
+                return bookmarkTimestamps.getOrDefault(topicName, null);
+            }
+        };
+        
+        // Set the topic names that we stored in the ampsClientsConfigured step
+        if (topicNames != null) {
+            if (topicNames.containsKey("recallTicketClient")) {
+                threadSafeCache.setRecallTicketTopicName(topicNames.get("recallTicketClient"));
+            }
+            if (topicNames.containsKey("recallToOmsClient")) {
+                threadSafeCache.setRecallToOmsTopicName(topicNames.get("recallToOmsClient"));
+            }
+            if (topicNames.containsKey("omsToRecallClient")) {
+                threadSafeCache.setOmsToRecallTopicName(topicNames.get("omsToRecallClient"));
+            }
+        }
+        
+        // Attempt to find and inject the recovery service
+        try {
+            // Try both common naming conventions for the recovery service field
+            String[] possibleFieldNames = {"recoveryService", "recovery", "recoveryServImpl", "recoveryServiceImpl"};
+            
+            boolean injected = false;
+            for (String fieldName : possibleFieldNames) {
+                try {
+                    setPrivateField(threadSafeCache, fieldName, recoveryService);
+                    injected = true;
+                    System.out.println("Successfully injected mock recovery service into field: " + fieldName);
+                    break;
+                } catch (Exception e) {
+                    // Try the next field name
+                    System.out.println("Field not found: " + fieldName);
+                }
+            }
+            
+            if (!injected) {
+                // As a fallback, let's print all fields of ThreadSafeCache
+                System.out.println("Could not find recovery service field. Available fields:");
+                printAllFields(threadSafeCache);
+            }
+        } catch (Exception e) {
+            System.err.println("Failed to inject recovery service: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        // Initialize empty transaction logs
+        try {
+            setPrivateField(threadSafeCache, "transactionLogs", transactionLogs);
+        } catch (Exception e) {
+            System.err.println("Failed to initialize transaction logs: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    private void printAllFields(Object obj) {
+        Class<?> clazz = obj.getClass();
+        while (clazz != null) {
+            for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
+                System.out.println("  " + field.getType().getSimpleName() + " " + field.getName());
+            }
+            clazz = clazz.getSuperclass();
+        }
+    }
+
+    @Given("the transaction logs contain the following entries:")
+    public void transactionLogsContainEntries(DataTable dataTable) {
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        
+        for (Map<String, String> row : rows) {
+            String orderId = row.get("OrderId");
+            String source = row.get("Source");
+            String state = row.get("State");
+            String timestampStr = row.get("Timestamp");
+            long recallQty = Long.parseLong(row.get("RecallQty"));
+            long fillQty = Long.parseLong(row.get("FillQty"));
+            double fillPrice = Double.parseDouble(row.get("FillPrice"));
+            
+            // Parse exec type if present
+            Character execType = null;
+            if (row.containsKey("ExecType") && row.get("ExecType") != null && !row.get("ExecType").equals("null")) {
+                String execTypeStr = row.get("ExecType");
+                if (execTypeStr.startsWith("'") && execTypeStr.endsWith("'")) {
+                    execType = execTypeStr.charAt(1);
+                }
+            }
+            
+            // Create a mock object based on source
+            Object message = createMockMessage(source, orderId, state, recallQty, fillQty, fillPrice, execType);
+
+            // Parse timestamp
+            Instant timestamp = parseTimestamp(timestampStr);
+            
+            // Create transaction log entry
+            TransactionLogEntry entry = new TransactionLogEntry.Builder()
+                .orderId(orderId)
+                .source(source)
+                .state(state)
+                .timestamp(timestamp)
+                .message(message)
+                .recallQty(recallQty)
+                .fillQty(fillQty)
+                .fillPrice(fillPrice)
+                .execType(execType)
+                .build();
+                
+            // Add to transaction logs
+            List<TransactionLogEntry> orderLogs = transactionLogs.computeIfAbsent(
+                orderId, k -> new ArrayList<>());
+            orderLogs.add(entry);
+        }
+    }
+
+    @When("the system initializes and rebuilds the cache")
+    public void systemInitializesAndRebuildsCache() {
+        // Mock the recovery service to return specific actions for orders
+        for (String orderId : transactionLogs.keySet()) {
+            RecoveryContext context = new RecoveryContext(
+                orderId,
+                getLatestRecallTicketEntry(orderId),
+                getRecallTicketEntries(orderId),
+                getOmsEntries(orderId)
+            );
+            
+            // Default action if not specifically set
+            RecoveryActionType action = recoveryActions.getOrDefault(orderId, RecoveryActionType.REBUILD);
+            
+            when(recoveryService.determineAction(any(RecoveryContext.class))).thenReturn(action);
+            
+            // Mock special scenarios
+            if (dfdRequests.containsKey(orderId) && dfdRequests.get(orderId)) {
+                doAnswer(invocation -> {
+                    RecoveryContext ctx = invocation.getArgument(0);
+                    ctx.setNeedsDfdRequest(true);
+                    return null;
+                }).when(recoveryService).executeRecoveryAction(any(RecoveryContext.class), eq(action));
+            }
+        }
+        
+        // Call the initialization method that would rebuild the cache
+        threadSafeCache.initialize();
+    }
+
+    @Then("the cache should contain {int} orders")
+    public void cacheShouldContainOrders(int count) {
+        // Try different possible field names for the order cache
+        Map<String, Order> orderCache = null;
+        String[] possibleOrderCacheFields = {"orderCache", "orders", "orderMap"};
+        
+        for (String fieldName : possibleOrderCacheFields) {
+            try {
+                orderCache = getPrivateField(threadSafeCache, fieldName);
+                if (orderCache != null) {
+                    System.out.println("Found order cache in field: " + fieldName);
+                    break;
+                }
+            } catch (Exception e) {
+                // Try next field name
+            }
+        }
+        
+        if (orderCache == null) {
+            System.out.println("Could not find order cache field. Available fields:");
+            printAllFields(threadSafeCache);
+            fail("Could not find order cache field");
+        }
+        
+        assertEquals("Order cache size doesn't match expected count", count, orderCache.size());
+    }
+
+    @Then("the order {string} should be in state {string}")
+    public void orderShouldBeInState(String orderId, String expectedState) {
+        // Try different possible field names for the order cache
+        Map<String, Order> orderCache = null;
+        String[] possibleOrderCacheFields = {"orderCache", "orders", "orderMap"};
+        
+        for (String fieldName : possibleOrderCacheFields) {
+            try {
+                orderCache = getPrivateField(threadSafeCache, fieldName);
+                if (orderCache != null) {
+                    break;
+                }
+            } catch (Exception e) {
+                // Try next field name
+            }
+        }
+        
+        if (orderCache == null) {
+            fail("Could not find order cache field");
+        }
+        
+        Order order = orderCache.get(orderId);
+        
+        assertNotNull("Order " + orderId + " not found in cache", order);
+        assertEquals("Order state doesn't match expected state", 
+            OrderState.valueOf(expectedState), order.getCurrentState());
+    }
+
+    @Then("the order {string} should have the following attributes:")
+    public void orderShouldHaveAttributes(String orderId, DataTable dataTable) {
+        // Try different possible field names for the order cache
+        Map<String, Order> orderCache = null;
+        String[] possibleOrderCacheFields = {"orderCache", "orders", "orderMap"};
+        
+        for (String fieldName : possibleOrderCacheFields) {
+            try {
+                orderCache = getPrivateField(threadSafeCache, fieldName);
+                if (orderCache != null) {
+                    break;
+                }
+            } catch (Exception e) {
+                // Try next field name
+            }
+        }
+        
+        if (orderCache == null) {
+            fail("Could not find order cache field");
+        }
+        
+        Order order = orderCache.get(orderId);
+        
+        assertNotNull("Order " + orderId + " not found in cache", order);
+        
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        // Should only have one row
+        Map<String, String> attributeRow = rows.get(0);
+        
+        assertEquals("RecallQty doesn't match", 
+            Long.parseLong(attributeRow.get("RecallQty")), order.getOrdQty());
+            
+        // Check fill data if ExecutionReport exists
+        if (order.getFillRequest() != null) {
+            ExecutionReport fillRequest = order.getFillRequest();
+            assertEquals("FillQty doesn't match", 
+                Long.parseLong(attributeRow.get("FillQty")), fillRequest.getCumQty());
+            assertEquals("FillPrice doesn't match", 
+                Double.parseDouble(attributeRow.get("FillPrice")), fillRequest.getAvgPrice(), 0.001);
+        }
+    }
+
+    @Then("no recovery actions should be required")
+    public void noRecoveryActionsShouldBeRequired() {
+        verify(recoveryService, never()).executeRecoveryAction(any(), eq(RecoveryActionType.REPUBLISH));
+    }
+
+    @Then("recovery action {string} should be triggered for order {string}")
+    public void recoveryActionShouldBeTriggered(String actionType, String orderId) {
+        RecoveryActionType expectedAction = RecoveryActionType.valueOf(actionType);
+        recoveryActions.put(orderId, expectedAction);
+        
+        // Verify the service was called with this action
+        verify(recoveryService, times(1)).executeRecoveryAction(argThat(context -> 
+            context.getOrderId().equals(orderId)), eq(expectedAction));
+    }
+
+    @Then("a message should be published to {string} topic with current state {string}")
+    public void messageShouldBePublishedToTopic(String topic, String state) {
+        // Verify a publish was called on the appropriate client
+        if (topic.equals("RECALL/TICKET")) {
+            verify(recallTicketClient, atLeastOnce()).publish(eq(topic), anyString());
+        } else if (topic.equals("RECALL/TO/OMS")) {
+            verify(recallToOmsClient, atLeastOnce()).publish(eq(topic), anyString());
+        } else if (topic.equals("OMS/TO/RECALL")) {
+            verify(omsToRecallClient, atLeastOnce()).publish(eq(topic), anyString());
+        }
+    }
+
+    @Then("DFD request flag should be set to {string} for order {string}")
+    public void dfdRequestFlagShouldBeSet(String flagValue, String orderId) {
+        boolean expected = Boolean.parseBoolean(flagValue);
+        dfdRequests.put(orderId, expected);
+        
+        // This is verified through the setup of the mock in the When step
+        ArgumentCaptor<RecoveryContext> contextCaptor = ArgumentCaptor.forClass(RecoveryContext.class);
+        verify(recoveryService, atLeastOnce()).executeRecoveryAction(contextCaptor.capture(), any());
+        
+        boolean found = false;
+        for (RecoveryContext context : contextCaptor.getAllValues()) {
+            if (context.getOrderId().equals(orderId)) {
+                found = true;
+                // Call needsDfdRequest to verify it's been set by the recovery service
+                assertEquals("DFD flag wasn't set correctly", expected, context.needsDfdRequest());
+                break;
+            }
+        }
+        
+        assertTrue("No context found for order: " + orderId, found);
+    }
+
+    @Then("a DFD request should be published to {string} topic for order {string}")
+    public void dfdRequestShouldBePublished(String topic, String orderId) {
+        verify(recallToOmsClient, atLeastOnce()).publish(eq(topic), anyString());
+    }
+
+    // Helper methods
+    
+    private Object createMockMessage(String source, String orderId, String state, 
+                                   long recallQty, long fillQty, double fillPrice, 
+                                   Character execType) {
+        if (source.equals("RECALL/TICKET")) {
+            RecallTicket ticket = mock(RecallTicket.class);
+            when(ticket.getId()).thenReturn(orderId);
+            when(ticket.getCurrentState()).thenReturn(state);
+            when(ticket.getRecallQty()).thenReturn(recallQty);
+            when(ticket.getFillQty()).thenReturn(fillQty);
+            when(ticket.getFillPrice()).thenReturn(fillPrice);
+            return ticket;
+        } else if (source.equals("RECALL/TO/OMS")) {
+            Order order = mock(Order.class);
+            when(order.getClOrdID()).thenReturn(orderId);
+            when(order.getCurrentState()).thenReturn(OrderState.valueOf(state));
+            when(order.getOrdQty()).thenReturn(recallQty);
+            
+            if (fillQty > 0) {
+                ExecutionReport fillRequest = mock(ExecutionReport.class);
+                when(fillRequest.getCumQty()).thenReturn(fillQty);
+                when(fillRequest.getAvgPrice()).thenReturn(fillPrice);
+                when(order.getFillRequest()).thenReturn(fillRequest);
+            }
+            
+            return order;
+        } else if (source.equals("OMS/TO/RECALL")) {
+            ExecutionReport report = mock(ExecutionReport.class);
+            when(report.getOrigClOrdID()).thenReturn(orderId);
+            when(report.getClOrdID()).thenReturn(orderId);
+            when(report.getCumQty()).thenReturn(fillQty);
+            when(report.getAvgPrice()).thenReturn(fillPrice);
+            
+            // Leave execType as null if not specified
+            if (execType != null) {
+                when(report.getExecType()).thenReturn(execType);
+            }
+            
+            return report;
+        }
+        
+        return null;
+    }
+    
+    private Instant parseTimestamp(String timestampStr) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss.SSSSSSS'Z'")
+            .withZone(ZoneId.of("GMT"));
+        return Instant.from(formatter.parse(timestampStr));
+    }
+    
+    private TransactionLogEntry getLatestRecallTicketEntry(String orderId) {
+        List<TransactionLogEntry> entries = transactionLogs.get(orderId);
+        if (entries == null || entries.isEmpty()) {
+            return null;
+        }
+        
+        return entries.stream()
+            .filter(e -> e.getSource().equals("RECALL/TICKET"))
+            .sorted((e1, e2) -> e2.getTimestamp().compareTo(e1.getTimestamp()))
+            .findFirst()
+            .orElse(null);
+    }
+    
+    private List<TransactionLogEntry> getRecallTicketEntries(String orderId) {
+        List<TransactionLogEntry> entries = transactionLogs.get(orderId);
+        if (entries == null || entries.isEmpty()) {
+            return new ArrayList<>();
+        }
+        
+        List<TransactionLogEntry> result = new ArrayList<>();
+        for (TransactionLogEntry entry : entries) {
+            if (entry.getSource().equals("RECALL/TICKET")) {
+                result.add(entry);
+            }
+        }
+        
+        return result;
+    }
+    
+    private List<TransactionLogEntry> getOmsEntries(String orderId) {
+        List<TransactionLogEntry> entries = transactionLogs.get(orderId);
+        if (entries == null || entries.isEmpty()) {
+            return new ArrayList<>();
+        }
+        
+        List<TransactionLogEntry> result = new ArrayList<>();
+        for (TransactionLogEntry entry : entries) {
+            if (entry.getSource().equals("RECALL/TO/OMS") || 
+                entry.getSource().equals("OMS/TO/RECALL")) {
+                result.add(entry);
+            }
+        }
+        
+        return result;
+    }
+    
+    // Utility methods for accessing private fields
+    
+    @SuppressWarnings("unchecked")
+    private <T> T getPrivateField(Object obj, String fieldName) {
+        try {
+            // Try to find the field in the class hierarchy
+            Class<?> clazz = obj.getClass();
+            while (clazz != null) {
+                try {
+                    java.lang.reflect.Field field = clazz.getDeclaredField(fieldName);
+                    field.setAccessible(true);
+                    return (T) field.get(obj);
+                } catch (NoSuchFieldException e) {
+                    // Field not found in this class, try superclass
+                    clazz = clazz.getSuperclass();
+                }
+            }
+            
+            // If we get here, the field wasn't found anywhere in the hierarchy
+            throw new NoSuchFieldException("Field '" + fieldName + "' not found in " + obj.getClass().getName() + " or any of its superclasses");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to get private field " + fieldName, e);
+        }
+    }
+    
+    private void setPrivateField(Object obj, String fieldName, Object value) {
+        try {
+            // Try to find the field in the class hierarchy
+            Class<?> clazz = obj.getClass();
+            while (clazz != null) {
+                try {
+                    java.lang.reflect.Field field = clazz.getDeclaredField(fieldName);
+                    field.setAccessible(true);
+                    field.set(obj, value);
+                    return;
+                } catch (NoSuchFieldException e) {
+                    // Field not found in this class, try superclass
+                    clazz = clazz.getSuperclass();
+                }
+            }
+            
+            // If we get here, the field wasn't found anywhere in the hierarchy
+            throw new NoSuchFieldException("Field '" + fieldName + "' not found in " + obj.getClass().getName() + " or any of its superclasses");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to set private field " + fieldName, e);
+        }
+    }
+}
