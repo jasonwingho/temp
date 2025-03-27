@@ -34,14 +34,33 @@ public class MessageParserHybridFormatSteps {
         // Create a hybrid message with JSON content and SOH-delimited metadata
         // SOH character represented as \u0001
         hybridMessage = "{" +
-                "\"id\":\"TEST123\"," +
-                "\"reqId\":\"REQ-123\"," +
-                "\"currentState\":\"New\"," +
-                "\"requestor\":\"TestUser\"," +
-                "\"ticker\":\"AAPL\"," +
-                "\"recallQty\":100," +
-                "\"fillQty\":0," +
-                "\"fillPrice\":0.0" +
+                "\"recallType\" : \"Lender Recall Exec on behalf\"," +
+                "\"estimatedUSDNotional\" : \"\"," +
+                "\"swapCurrency\" : \"USD\"," +
+                "\"positionType\" : \"\"," +
+                "\"USDNotional\" : \"\"," +
+                "\"clientType\" : \"\"," +
+                "\"D1Comment\" : \"\"," +
+                "\"client\" : \"ALLOC_MARSH\"," +
+                "\"currency\" : \"CNH\"," +
+                "\"id\" : \"OrderId-2025_03_27_1143_LENDER_RECALL\"," +
+                "\"owner\" : \"sally.oh\"," +
+                "\"coperId\" : 410000862," +
+                "\"SLComment\" : \"\"," +
+                "\"ticker\" : \"600036.SH\"," +
+                "\"clientSubType\" : \"\"," +
+                "\"recallQty\" : 1000.0," +
+                "\"requestor\" : \"sally.oh\"," +
+                "\"fillPrice\" : 0.0," +
+                "\"reqId\" : \"918e299b-a475-488c-9c72-75ca9f4e4e2d\"," +
+                "\"market\" : \"CHINA\"," +
+                "\"entryTime\" : \"2025-03-27T03:44:02.000817\"," +
+                "\"origType\" : \"SFE\"," +
+                "\"fillInstruction\" : \"\"," +
+                "\"fund\" : \"ALLOC_MARSH\"," +
+                "\"currentState\" : \"Created\"," +
+                "\"effectiveDate\" : \"2025-03-27\"," +
+                "\"fillQty\" : 0.0" +
                 "}" +
                 "\u0001AMPSSTAMP=20250321T135819.46352672Z\u0001" +
                 "AMPSRECEIVED=1742855099463\u0001" + 
@@ -64,14 +83,23 @@ public class MessageParserHybridFormatSteps {
     @Then("the object should have the correct values from JSON content")
     public void the_object_should_have_the_correct_values_from_json_content() {
         assertNotNull("Parsed ticket should not be null", parsedTicket);
-        assertEquals("TEST123", parsedTicket.getId());
-        assertEquals("REQ-123", parsedTicket.getReqId());
-        assertEquals("New", parsedTicket.getCurrentState());
-        assertEquals("TestUser", parsedTicket.getRequestor());
-        assertEquals("AAPL", parsedTicket.getTicker());
-        assertEquals(100, parsedTicket.getRecallQty());
-        assertEquals(0, parsedTicket.getFillQty());
+        assertEquals("OrderId-2025_03_27_1143_LENDER_RECALL", parsedTicket.getId());
+        assertEquals("918e299b-a475-488c-9c72-75ca9f4e4e2d", parsedTicket.getReqId());
+        assertEquals("Created", parsedTicket.getCurrentState());
+        assertEquals("sally.oh", parsedTicket.getRequestor());
+        assertEquals("600036.SH", parsedTicket.getTicker());
+        assertEquals(1000.0, parsedTicket.getRecallQty(), 0.001);
+        assertEquals(0.0, parsedTicket.getFillQty(), 0.001);
         assertEquals(0.0, parsedTicket.getFillPrice(), 0.001);
+        assertEquals("Lender Recall Exec on behalf", parsedTicket.getRecallType());
+        assertEquals("ALLOC_MARSH", parsedTicket.getClient());
+        assertEquals("CNH", parsedTicket.getCurrency());
+        assertEquals("sally.oh", parsedTicket.getOwner());
+        assertEquals(410000862, parsedTicket.getCoperId());
+        assertEquals("CHINA", parsedTicket.getMarket());
+        assertEquals("ALLOC_MARSH", parsedTicket.getFund());
+        assertEquals("USD", parsedTicket.getSwapCurrency());
+        assertEquals("SFE", parsedTicket.getOrigType());
     }
 
     @Then("the object should have the correct values from metadata")
@@ -98,14 +126,33 @@ public class MessageParserTest {
     public void testParseHybridFormat() throws Exception {
         // Create a hybrid message with JSON content and SOH-delimited metadata
         String hybridMessage = "{" +
-                "\"id\":\"TEST123\"," +
-                "\"reqId\":\"REQ-123\"," +
-                "\"currentState\":\"New\"," +
-                "\"requestor\":\"TestUser\"," +
-                "\"ticker\":\"AAPL\"," +
-                "\"recallQty\":100," +
-                "\"fillQty\":0," +
-                "\"fillPrice\":0.0" +
+                "\"recallType\" : \"Lender Recall Exec on behalf\"," +
+                "\"estimatedUSDNotional\" : \"\"," +
+                "\"swapCurrency\" : \"USD\"," +
+                "\"positionType\" : \"\"," +
+                "\"USDNotional\" : \"\"," +
+                "\"clientType\" : \"\"," +
+                "\"D1Comment\" : \"\"," +
+                "\"client\" : \"ALLOC_MARSH\"," +
+                "\"currency\" : \"CNH\"," +
+                "\"id\" : \"OrderId-2025_03_27_1143_LENDER_RECALL\"," +
+                "\"owner\" : \"sally.oh\"," +
+                "\"coperId\" : 410000862," +
+                "\"SLComment\" : \"\"," +
+                "\"ticker\" : \"600036.SH\"," +
+                "\"clientSubType\" : \"\"," +
+                "\"recallQty\" : 1000.0," +
+                "\"requestor\" : \"sally.oh\"," +
+                "\"fillPrice\" : 0.0," +
+                "\"reqId\" : \"918e299b-a475-488c-9c72-75ca9f4e4e2d\"," +
+                "\"market\" : \"CHINA\"," +
+                "\"entryTime\" : \"2025-03-27T03:44:02.000817\"," +
+                "\"origType\" : \"SFE\"," +
+                "\"fillInstruction\" : \"\"," +
+                "\"fund\" : \"ALLOC_MARSH\"," +
+                "\"currentState\" : \"Created\"," +
+                "\"effectiveDate\" : \"2025-03-27\"," +
+                "\"fillQty\" : 0.0" +
                 "}" +
                 "\u0001AMPSSTAMP=20250321T135819.46352672Z\u0001" +
                 "AMPSRECEIVED=1742855099463\u0001" + 
@@ -122,14 +169,23 @@ public class MessageParserTest {
         
         // Verify JSON content
         assertNotNull(parsedTicket);
-        assertEquals("TEST123", parsedTicket.getId());
-        assertEquals("REQ-123", parsedTicket.getReqId());
-        assertEquals("New", parsedTicket.getCurrentState());
-        assertEquals("TestUser", parsedTicket.getRequestor());
-        assertEquals("AAPL", parsedTicket.getTicker());
-        assertEquals(100, parsedTicket.getRecallQty());
-        assertEquals(0, parsedTicket.getFillQty());
+        assertEquals("OrderId-2025_03_27_1143_LENDER_RECALL", parsedTicket.getId());
+        assertEquals("918e299b-a475-488c-9c72-75ca9f4e4e2d", parsedTicket.getReqId());
+        assertEquals("Created", parsedTicket.getCurrentState());
+        assertEquals("sally.oh", parsedTicket.getRequestor());
+        assertEquals("600036.SH", parsedTicket.getTicker());
+        assertEquals(1000.0, parsedTicket.getRecallQty(), 0.001);
+        assertEquals(0.0, parsedTicket.getFillQty(), 0.001);
         assertEquals(0.0, parsedTicket.getFillPrice(), 0.001);
+        assertEquals("Lender Recall Exec on behalf", parsedTicket.getRecallType());
+        assertEquals("ALLOC_MARSH", parsedTicket.getClient());
+        assertEquals("CNH", parsedTicket.getCurrency());
+        assertEquals("sally.oh", parsedTicket.getOwner());
+        assertEquals(410000862, parsedTicket.getCoperId());
+        assertEquals("CHINA", parsedTicket.getMarket());
+        assertEquals("ALLOC_MARSH", parsedTicket.getFund());
+        assertEquals("USD", parsedTicket.getSwapCurrency());
+        assertEquals("SFE", parsedTicket.getOrigType());
         
         // Verify metadata
         assertEquals("20250321T135819.46352672Z", parsedTicket.getAmpsStamp());
