@@ -1,0 +1,111 @@
+Feature: Order Cache Rebuild
+
+  Background:
+    Given the system is initialized with empty caches
+    And the AMPS clients are configured for the following topics:
+      | Topic              | Client               |
+      | RECALL/TICKET      | recallTicketClient   |
+      | RECALL/TO/OMS      | recallToOmsClient    |
+      | OMS/TO/RECALL      | omsToRecallClient    |
+    And the bookmark timestamps are configured as:
+      | Topic              | Timestamp                   |
+      | RECALL/TICKET      | 20250321T135819.46352672Z  |
+      | OMS/TO/RECALL      | 20250321T135825.12345678Z  |
+
+  Scenario: Successful cache rebuild from transaction logs during startup
+    Given the transaction logs contain the following entries:
+      | OrderId    | Source           | State          | Timestamp                  | RecallQty | FillQty | FillPrice | Ticker | Currency | Fund      | PositionType | RecallType    |
+      | ORDER-123  | RECALL/TICKET    | New            | 20250321T120000.00000000Z | 1000      | 0       | 0.0       | AAPL   | USD      | TEST_FUND | Normal       | Standard      |
+      | ORDER-123  | RECALL/TO/OMS    | PendingNew     | 20250321T120100.00000000Z | 1000      | 0       | 0.0       |        |          |           |              |               |
+      | ORDER-123  | OMS/TO/RECALL    | New            | 20250321T120200.00000000Z | 1000      | 0       | 0.0       |        |          |           |              |               |
+      | ORDER-123  | RECALL/TO/OMS    | PendingFill    | 20250321T120300.00000000Z | 1000      | 500     | 25.5      |        |          |           |              |               |
+      | ORDER-123  | OMS/TO/RECALL    | PartiallyFilled| 20250321T120400.00000000Z | 1000      | 500     | 25.5      |        |          |           |              |               |
+    When the system initializes and rebuilds the cache
+    Then the cache should contain 1 orders
+    And the order "ORDER-123" should be in state "PartiallyFilled"
+    And the order "ORDER-123" should have the following attributes:
+      | RecallQty | FillQty | FillPrice |
+      | 1000      | 500     | 25.5      |
+    And no recovery actions should be required
+
+  Scenario: Cache rebuild with state discrepancy requiring republish
+    Given the transaction logs contain the following entries:
+      | OrderId    | Source           | State          | Timestamp                  | RecallQty | FillQty | FillPrice | Ticker | Currency | Fund      | PositionType | RecallType    |
+      | ORDER-456  | RECALL/TICKET    | New            | 20250321T130000.00000000Z | 2000      | 0       | 0.0       | MSFT   | USD      | TECH_FUND | Normal       | Standard      |
+      | ORDER-456  | RECALL/TO/OMS    | PendingNew     | 20250321T130100.00000000Z | 2000      | 0       | 0.0       |        |          |           |              |               |
+      | ORDER-456  | OMS/TO/RECALL    | New            | 20250321T130200.00000000Z | 2000      | 0       | 0.0       |        |          |           |              |               |
+      | ORDER-456  | RECALL/TO/OMS    | PendingFill    | 20250321T130300.00000000Z | 2000      | 1000    | 30.5      |        |          |           |              |               |
+      | ORDER-456  | OMS/TO/RECALL    | PartiallyFilled| 20250321T130400.00000000Z | 2000      | 1000    | 30.5      |        |          |           |              |               |
+      | ORDER-456  | RECALL/TICKET    | New            | 20250321T130500.00000000Z | 2000      | 0       | 0.0       | MSFT   | USD      | TECH_FUND | Normal       | Standard      |
+    When the system initializes and rebuilds the cache
+    Then the cache should contain 1 orders
+    And the order "ORDER-456" should be in state "PartiallyFilled"
+    And recovery action "REPUBLISH" should be triggered for order "ORDER-456"
+    And a message should be published to "RECALL/TICKET" topic with current state "PartiallyFilled"
+
+  Scenario: Cache rebuild with discarded transaction logs due to bookmark timestamps
+    Given the transaction logs contain the following entries:
+      | OrderId    | Source           | State          | Timestamp                  | RecallQty | FillQty | FillPrice | Ticker | Currency | Fund       | PositionType | RecallType    |
+      | ORDER-789  | RECALL/TICKET    | New            | 20250321T125000.00000000Z | 3000      | 0       | 0.0       | AMZN   | USD      | GROWTH_FUND| Normal       | Standard      |
+      | ORDER-789  | RECALL/TO/OMS    | PendingNew     | 20250321T125100.00000000Z | 3000      | 0       | 0.0       |        |          |            |              |               |
+      | ORDER-789  | OMS/TO/RECALL    | New            | 20250321T125200.00000000Z | 3000      | 0       | 0.0       |        |          |            |              |               |
+      | ORDER-789  | RECALL/TICKET    | Filled         | 20250321T140000.00000000Z | 3000      | 3000    | 40.5      | AMZN   | USD      | GROWTH_FUND| Normal       | Standard      |
+      | ORDER-789  | OMS/TO/RECALL    | Filled         | 20250321T140100.00000000Z | 3000      | 3000    | 40.5      |        |          |            |              |               |
+    When the system initializes and rebuilds the cache
+    Then the cache should contain 1 orders
+    And the order "ORDER-789" should be in state "New"
+    And the order "ORDER-789" should have the following attributes:
+      | RecallQty | FillQty | FillPrice |
+      | 3000      | 0       | 0.0       |
+    And recovery action "REBUILD" should be triggered for order "ORDER-789"
+
+  Scenario: Cache rebuild with DFD (Done For Day) request
+    Given the transaction logs contain the following entries:
+      | OrderId    | Source           | State          | Timestamp                  | RecallQty | FillQty | FillPrice | Ticker | Currency | Fund        | PositionType | RecallType    | ExecType |
+      | ORDER-012  | RECALL/TICKET    | New            | 20250321T110000.00000000Z | 5000      | 0       | 0.0       | GOOG   | USD      | INCOME_FUND | Normal       | Standard      | null     |
+      | ORDER-012  | RECALL/TO/OMS    | PendingNew     | 20250321T110100.00000000Z | 5000      | 0       | 0.0       |        |          |             |              |               | null     |
+      | ORDER-012  | OMS/TO/RECALL    | New            | 20250321T110200.00000000Z | 5000      | 0       | 0.0       |        |          |             |              |               | '0'      |
+      | ORDER-012  | RECALL/TO/OMS    | PendingFill    | 20250321T110300.00000000Z | 5000      | 5000    | 50.75     |        |          |             |              |               | null     |
+      | ORDER-012  | OMS/TO/RECALL    | Filled         | 20250321T110400.00000000Z | 5000      | 5000    | 50.75     |        |          |             |              |               | '2'      |
+    When the system initializes and rebuilds the cache
+    Then the cache should contain 1 orders
+    And the order "ORDER-012" should be in state "Filled" 
+    And recovery action "REBUILD" should be triggered for order "ORDER-012"
+    And DFD request flag should be set to "true" for order "ORDER-012"
+    And a DFD request should be published to "RECALL/TO/OMS" topic for order "ORDER-012"
+
+  Scenario: Cache rebuild with Hedge position type
+    Given the transaction logs contain the following entries:
+      | OrderId    | Source           | State          | Timestamp                  | RecallQty | FillQty | FillPrice | Ticker | Currency | Fund         | PositionType | RecallType    | ExecType |
+      | ORDER-567  | RECALL/TICKET    | New            | 20250321T115000.00000000Z | 4000      | 0       | 0.0       | TSLA   | USD      | SPECIAL_FUND | Hedge        | Standard      | null     |
+      | ORDER-567  | RECALL/TO/OMS    | PendingNew     | 20250321T115100.00000000Z | 4000      | 0       | 0.0       |        |          |              |              |               | null     |
+      | ORDER-567  | OMS/TO/RECALL    | New            | 20250321T115200.00000000Z | 4000      | 0       | 0.0       |        |          |              |              |               | '0'      |
+      | ORDER-567  | RECALL/TO/OMS    | PendingFill    | 20250321T115300.00000000Z | 4000      | 2000    | 45.50     |        |          |              |              |               | null     |
+      | ORDER-567  | OMS/TO/RECALL    | PartiallyFilled| 20250321T115400.00000000Z | 4000      | 2000    | 45.50     |        |          |              |              |               | '1'      |
+    When the system initializes and rebuilds the cache
+    Then the cache should contain 1 orders
+    And the order "ORDER-567" should be in state "PartiallyFilled"
+    And the order "ORDER-567" should have the following attributes:
+      | RecallQty | FillQty | FillPrice |
+      | 4000      | 2000    | 45.50     |
+    And recovery action "REBUILD" should be triggered for order "ORDER-567"
+
+  Scenario: Cache rebuild with multiple orders
+    Given the transaction logs contain the following entries:
+      | OrderId    | Source           | State          | Timestamp                  | RecallQty | FillQty | FillPrice | Ticker | Currency | Fund        | PositionType | RecallType         | ExecType |
+      | ORDER-888  | RECALL/TICKET    | New            | 20250321T100000.00000000Z | 1500      | 0       | 0.0       | FB     | USD      | MIXED_FUND  | Normal       | Standard           | null     |
+      | ORDER-888  | RECALL/TO/OMS    | PendingNew     | 20250321T100100.00000000Z | 1500      | 0       | 0.0       |        |          |             |              |                    | null     |
+      | ORDER-888  | OMS/TO/RECALL    | New            | 20250321T100200.00000000Z | 1500      | 0       | 0.0       |        |          |             |              |                    | '0'      |
+      | ORDER-999  | RECALL/TICKET    | New            | 20250321T100300.00000000Z | 2500      | 0       | 0.0       | NFLX   | USD      | VALUE_FUND  | Normal       | Lender Recall Exec | null     |
+      | ORDER-999  | RECALL/TO/OMS    | PendingNew     | 20250321T100400.00000000Z | 2500      | 0       | 0.0       |        |          |             |              |                    | null     |
+      | ORDER-999  | OMS/TO/RECALL    | New            | 20250321T100500.00000000Z | 2500      | 0       | 0.0       |        |          |             |              |                    | '0'      |
+      | ORDER-888  | RECALL/TO/OMS    | PendingFill    | 20250321T100600.00000000Z | 1500      | 1500    | 35.25     |        |          |             |              |                    | null     |
+      | ORDER-888  | OMS/TO/RECALL    | Filled         | 20250321T100700.00000000Z | 1500      | 1500    | 35.25     |        |          |             |              |                    | '2'      |
+      | ORDER-999  | RECALL/TO/OMS    | PendingCancel  | 20250321T100800.00000000Z | 2500      | 0       | 0.0       |        |          |             |              |                    | null     |
+      | ORDER-999  | OMS/TO/RECALL    | Canceled       | 20250321T100900.00000000Z | 2500      | 0       | 0.0       |        |          |             |              |                    | '4'      |
+    When the system initializes and rebuilds the cache
+    Then the cache should contain 2 orders
+    And the order "ORDER-888" should be in state "Filled"
+    And the order "ORDER-999" should be in state "Canceled"
+    And recovery action "REBUILD" should be triggered for order "ORDER-888"
+    And recovery action "REBUILD" should be triggered for order "ORDER-999"
