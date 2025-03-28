@@ -1,0 +1,207 @@
+Feature: Order Cache Rebuild
+
+  Background:
+    Given the system is initialized with empty caches
+    And the AMPS clients are configured for the following topics:
+      | Topic              | Client               |
+      | RECALL/TICKET      | recallTicketClient   |
+      | RECALL/TO/OMS      | recallToOmsClient    |
+      | OMS/TO/RECALL      | omsToRecallClient    |
+    And the bookmark timestamps are configured as:
+      | Topic              | Timestamp                   |
+      | RECALL/TICKET      | 20250321T135819.46352672Z  |
+      | OMS/TO/RECALL      | 20250321T135825.12345678Z  |
+
+  Scenario: Successful cache rebuild from transaction logs during startup
+    Given the transaction logs contain the following entries:
+      | OrderId    | Source           | State          | Timestamp                  | RecallQty | FillQty | FillPrice | Ticker | Currency | Fund      | PositionType | RecallType    |
+      | ORDER-123  | RECALL/TICKET    | New            | 20250321T120000.00000000Z | 1000      | 0       | 0.0       | AAPL   | USD      | TEST_FUND | Normal       | Standard      |
+      | ORDER-123  | RECALL/TO/OMS    | PendingNew     | 20250321T120100.00000000Z | 1000      | 0       | 0.0       |        |          |           |              |               |
+      | ORDER-123  | OMS/TO/RECALL    | New            | 20250321T120200.00000000Z | 1000      | 0       | 0.0       |        |          |           |              |               |
+      | ORDER-123  | RECALL/TO/OMS    | PendingFill    | 20250321T120300.00000000Z | 1000      | 500     | 25.5      |        |          |           |              |               |
+      | ORDER-123  | OMS/TO/RECALL    | PartiallyFilled| 20250321T120400.00000000Z | 1000      | 500     | 25.5      |        |          |           |              |               |
+    When the system initializes and rebuilds the cache
+    Then the cache should contain 1 orders
+    And the order "ORDER-123" should be in state "PartiallyFilled"
+    And the order "ORDER-123" should have the following attributes:
+      | RecallQty | FillQty | FillPrice |
+      | 1000      | 500     | 25.5      |
+    And no recovery actions should be required
+
+  # Repeat the enhanced data table format for other scenarios...
+public class CacheRebuildStepDefs {
+    // ... existing fields ...
+
+    @Given("the transaction logs contain the following entries:")
+    public void transactionLogsContainEntries(DataTable dataTable) {
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        
+        for (Map<String, String> row : rows) {
+            String orderId = row.get("OrderId");
+            String source = row.get("Source");
+            String state = row.get("State");
+            String timestampStr = row.get("Timestamp");
+            long recallQty = Long.parseLong(row.get("RecallQty"));
+            long fillQty = Long.parseLong(row.get("FillQty"));
+            double fillPrice = Double.parseDouble(row.get("FillPrice"));
+            
+            // Get optional fields with defaults
+            String ticker = row.getOrDefault("Ticker", "AAPL");
+            String currency = row.getOrDefault("Currency", "USD");
+            String fund = row.getOrDefault("Fund", "TEST_FUND");
+            String positionType = row.getOrDefault("PositionType", "Normal");
+            String recallType = row.getOrDefault("RecallType", "Standard");
+            
+            Character execType = null;
+            if (row.containsKey("ExecType") && row.get("ExecType") != null && !row.get("ExecType").equals("null")) {
+                String execTypeStr = row.get("ExecType");
+                if (execTypeStr.startsWith("'") && execTypeStr.endsWith("'")) {
+                    execType = execTypeStr.charAt(1);
+                }
+            }
+            
+            // Create actual objects with all required fields
+            Object message = createRealMessage(source, orderId, state, recallQty, fillQty, fillPrice, 
+                                             execType, ticker, currency, fund, positionType, recallType);
+            Instant timestamp = parseTimestamp(timestampStr);
+            
+            TransactionLogEntry entry = TransactionLogEntry.Builder()
+                .orderId(orderId)
+                .source(source)
+                .state(state)
+                .timestamp(timestamp)
+                .message(message)
+                .recallQty(recallQty)
+                .fillQty(fillQty)
+                .fillPrice(fillPrice)
+                .execType(execType)
+                .build();
+                
+            List<TransactionLogEntry> orderLogs = transactionLogs.computeIfAbsent(
+                orderId, k -> new ArrayList<>());
+            orderLogs.add(entry);
+        }
+    }
+
+    // Updated method with all required fields for RecallTicket
+    private Object createRealMessage(String source, String orderId, String state, 
+                                   long recallQty, long fillQty, double fillPrice,
+                                   Character execType, String ticker, String currency,
+                                   String fund, String positionType, String recallType) {
+        if (source.equals("RECALL/TICKET")) {
+            RecallTicket ticket = new RecallTicket();
+            
+            // Basic fields
+            ticket.setId(orderId);
+            ticket.setReqId(orderId); // Important - both ID and ReqID needed
+            ticket.setCurrentState(state);
+            ticket.setRecallQty(recallQty);
+            ticket.setFillQty(fillQty);
+            ticket.setFillPrice(fillPrice);
+            
+            // Required fields for Order.createFromRecallTicket
+            ticket.setTicker(ticker);
+            ticket.setCurrency(currency);
+            ticket.setFund(fund);
+            ticket.setPositionType(positionType);
+            ticket.setRecallType(recallType);
+            
+            // Dates and times
+            ticket.setEffectiveDate(LocalDate.now());
+            ZonedDateTime now = ZonedDateTime.now(ZoneId.of("GMT"));
+            ticket.setEntryTime(now);
+            
+            // Create the composite ID
+            RecallTicketCompositeId compositeId = new RecallTicketCompositeId(orderId, now, state);
+            ticket.setCompositeId(compositeId);
+            
+            // Additional required fields
+            ticket.setSwapCurrency(currency);
+            ticket.setClient("TestClient");
+            ticket.setRequestor("TestUser");
+            ticket.setOwner("TestOwner");
+            ticket.setOrigType("Original");
+            ticket.setCoperId(1234);
+            ticket.setClientType("TestClientType");
+            ticket.setClientSubType("SubType");
+            ticket.setMarket("TestMarket");
+            ticket.setEstimatedUSDNotional(recallQty * 100.0); // Some reasonable value
+            ticket.setUSDNotional(fillQty * fillPrice);
+            ticket.setFillInstruction("TestInstruction");
+            
+            return ticket;
+        } else if (source.equals("RECALL/TO/OMS")) {
+            Order order = new Order();
+            order.setClOrdID(orderId);
+            order.setOrderID(orderId);
+            order.setOrigClOrdID(orderId);
+            order.setCurrentState(OrderState.valueOf(state));
+            order.setOrdQty(recallQty);
+            order.setCurrency(currency);
+            order.setSymbol(ticker);
+            
+            // Standard values
+            order.setSenderCompID("CBRECALL");
+            order.setSenderSubID("CB");
+            order.setTargetCompID("CBOMSRECALL");
+            order.setTargetSubID("SWAP");
+            order.setMsgType("D");
+            order.setIdSource("5");
+            order.setHandlInst("3");
+            order.setSide('1');
+            order.setOrderType("1");
+            
+            // Set times
+            LocalDateTime now = LocalDateTime.now();
+            DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss");
+            DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd");
+            order.setTradeDate(now.format(dateFormatter));
+            order.setSendingTime(now.format(timeFormatter));
+            order.setTransactTime(now.format(timeFormatter));
+            
+            if (fillQty > 0) {
+                ExecutionReport fillRequest = new ExecutionReport();
+                fillRequest.setCumQty(fillQty);
+                fillRequest.setAvgPrice(fillPrice);
+                fillRequest.setLeavesQty(recallQty - fillQty);
+                if (execType != null) {
+                    fillRequest.setExecType(execType);
+                }
+                order.setFillRequest(fillRequest);
+            }
+            
+            return order;
+        } else if (source.equals("OMS/TO/RECALL")) {
+            ExecutionReport report = new ExecutionReport();
+            report.setOrigClOrdID(orderId);
+            report.setClOrdID(orderId);
+            report.setOrderID(orderId);
+            report.setCumQty(fillQty);
+            report.setAvgPrice(fillPrice);
+            report.setLeavesQty(recallQty - fillQty);
+            
+            // Standard values
+            report.setSenderCompID("OMS_PROD");
+            report.setTargetCompID("CBRECALL");
+            report.setCurrency(currency);
+            report.setSymbol(ticker);
+            report.setSide('1');
+            
+            // Set times
+            LocalDateTime now = LocalDateTime.now();
+            DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss");
+            report.setSendingTime(now.format(timeFormatter));
+            report.setTransactTime(now.format(timeFormatter));
+            
+            if (execType != null) {
+                report.setExecType(execType);
+            }
+            
+            return report;
+        }
+        
+        return null;
+    }
+    
+    // Rest of the class remains largely the same...
+}
