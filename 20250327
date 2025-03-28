@@ -6,28 +6,43 @@ Feature: Message Parser Hybrid Format Handling
 
   Scenario: Parse a JSON message with metadata
     Given a hybrid format message with JSON and metadata
-    When I parse the message using MessageParser
+    When I parse the message using MessageParser's parse method
     Then the object should have the correct values from JSON content
     And the object should have the correct values from metadata
+    
+  Scenario: Convert object back to JSON string
+    Given a RecallTicket object with populated fields
+    When I convert the object to string using MessageParser's toString method
+    Then the resulting string should contain all expected JSON fields
+    And the resulting string should be valid JSON
 
 // File: src/test/java/com/baml/gdot/recall/amps/parser/MessageParserHybridFormatSteps.java
 package com.baml.gdot.recall.amps.parser;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import com.baml.gdot.commons.amps.MessageType;
 import com.baml.gdot.recall.entity.RecallTicket;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.cucumber.java.en.Given;
 import io.cucumber.java.en.Then;
 import io.cucumber.java.en.When;
+
+import java.time.LocalDate;
 import java.time.ZonedDateTime;
 
 public class MessageParserHybridFormatSteps {
 
     private String hybridMessage;
     private RecallTicket parsedTicket;
+    private RecallTicket testRecallTicket;
     private MessageParser<RecallTicket> parser;
+    private String convertedJson;
 
     @Given("a hybrid format message with JSON and metadata")
     public void a_hybrid_format_message_with_json_and_metadata() {
@@ -70,14 +85,54 @@ public class MessageParserHybridFormatSteps {
         // Initialize the parser for RecallTicket class
         parser = new MessageParser<>(MessageType.JSON, RecallTicket.class);
     }
-
-    @When("I parse the message using MessageParser")
-    public void i_parse_the_message_using_message_parser() throws Exception {
-        // Use reflection to access the private method for testing
-        java.lang.reflect.Method parseMethod = MessageParser.class.getDeclaredMethod("parseHybridFormat", String.class);
-        parseMethod.setAccessible(true);
+    
+    @Given("a RecallTicket object with populated fields")
+    public void a_recall_ticket_object_with_populated_fields() {
+        // Create a populated RecallTicket object
+        testRecallTicket = new RecallTicket();
+        testRecallTicket.setId("OrderId-2025_03_28_TEST");
+        testRecallTicket.setReqId("test-req-id-123");
+        testRecallTicket.setCurrentState("New");
+        testRecallTicket.setRecallType("Lender Recall");
+        testRecallTicket.setOwner("john.doe");
+        testRecallTicket.setRequestor("john.doe");
+        testRecallTicket.setFund("TEST_FUND");
+        testRecallTicket.setClient("TEST_CLIENT");
+        testRecallTicket.setTicker("AAPL.NY");
+        testRecallTicket.setCurrency("USD");
+        testRecallTicket.setMarket("US");
+        testRecallTicket.setPositionType("Hedge");
+        testRecallTicket.setRecallQty(500.0);
+        testRecallTicket.setFillQty(0.0);
+        testRecallTicket.setFillPrice(0.0);
+        testRecallTicket.setCoperId(123456);
+        testRecallTicket.setSwapCurrency("USD");
+        testRecallTicket.setOrigType("TEST");
         
-        parsedTicket = (RecallTicket) parseMethod.invoke(parser, hybridMessage);
+        // Set entry time and effective date
+        testRecallTicket.setEntryTime(ZonedDateTime.now());
+        testRecallTicket.setEffectiveDate(LocalDate.now());
+        
+        // Set metadata fields
+        testRecallTicket.setAmpsStamp("20250328T120000.000000Z");
+        testRecallTicket.setAmpsReceived(1742855099999L);
+        
+        // Initialize the parser for RecallTicket class if not already done
+        if (parser == null) {
+            parser = new MessageParser<>(MessageType.JSON, RecallTicket.class);
+        }
+    }
+
+    @When("I parse the message using MessageParser's parse method")
+    public void i_parse_the_message_using_message_parser_parse_method() {
+        // Use the public parse method instead of using reflection to access private methods
+        parsedTicket = parser.parse(hybridMessage);
+    }
+    
+    @When("I convert the object to string using MessageParser's toString method")
+    public void i_convert_the_object_to_string_using_message_parser_to_string_method() {
+        // Convert the RecallTicket object to a JSON string
+        convertedJson = parser.toString(testRecallTicket);
     }
 
     @Then("the object should have the correct values from JSON content")
@@ -108,6 +163,49 @@ public class MessageParserHybridFormatSteps {
         assertEquals("20250321T135819.46352672Z", parsedTicket.getAmpsStamp());
         assertEquals(1742855099463L, parsedTicket.getAmpsReceived());
     }
+    
+    @Then("the resulting string should contain all expected JSON fields")
+    public void the_resulting_string_should_contain_all_expected_json_fields() {
+        assertNotNull("Converted JSON should not be null", convertedJson);
+        assertTrue("Should contain the ID", convertedJson.contains("\"id\":\"OrderId-2025_03_28_TEST\"") 
+                                        || convertedJson.contains("\"id\" : \"OrderId-2025_03_28_TEST\""));
+        assertTrue("Should contain the reqId", convertedJson.contains("\"reqId\":\"test-req-id-123\"") 
+                                         || convertedJson.contains("\"reqId\" : \"test-req-id-123\""));
+        assertTrue("Should contain the currentState", convertedJson.contains("\"currentState\":\"New\"") 
+                                              || convertedJson.contains("\"currentState\" : \"New\""));
+        assertTrue("Should contain recallType", convertedJson.contains("\"recallType\":\"Lender Recall\"") 
+                                           || convertedJson.contains("\"recallType\" : \"Lender Recall\""));
+        assertTrue("Should contain the ticker", convertedJson.contains("\"ticker\":\"AAPL.NY\"") 
+                                         || convertedJson.contains("\"ticker\" : \"AAPL.NY\""));
+        assertTrue("Should contain recallQty", convertedJson.contains("\"recallQty\":500.0") 
+                                        || convertedJson.contains("\"recallQty\" : 500.0"));
+        assertTrue("Should contain fund", convertedJson.contains("\"fund\":\"TEST_FUND\"") 
+                                    || convertedJson.contains("\"fund\" : \"TEST_FUND\""));
+    }
+    
+    @Then("the resulting string should be valid JSON")
+    public void the_resulting_string_should_be_valid_json() {
+        try {
+            // Create a new ObjectMapper to test if the string is valid JSON
+            ObjectMapper objectMapper = new ObjectMapper();
+            objectMapper.registerModule(new JavaTimeModule());
+            
+            // This will throw an exception if the JSON is invalid
+            JsonNode jsonNode = objectMapper.readTree(convertedJson);
+            
+            // Also verify that the parsed JSON can be converted back to a RecallTicket
+            RecallTicket parsedBack = objectMapper.treeToValue(jsonNode, RecallTicket.class);
+            
+            // Verify a few key fields to make sure the round-trip conversion works
+            assertEquals(testRecallTicket.getId(), parsedBack.getId());
+            assertEquals(testRecallTicket.getReqId(), parsedBack.getReqId());
+            assertEquals(testRecallTicket.getCurrentState(), parsedBack.getCurrentState());
+            assertEquals(testRecallTicket.getTicker(), parsedBack.getTicker());
+            assertEquals(testRecallTicket.getRecallQty(), parsedBack.getRecallQty(), 0.001);
+        } catch (Exception e) {
+            fail("The converted string is not valid JSON: " + e.getMessage());
+        }
+    }
 }
 
 // File: src/test/java/com/baml/gdot/recall/amps/parser/MessageParserTest.java
@@ -115,6 +213,7 @@ package com.baml.gdot.recall.amps.parser;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 import com.baml.gdot.commons.amps.MessageType;
 import com.baml.gdot.recall.entity.RecallTicket;
@@ -123,8 +222,9 @@ import org.junit.Test;
 public class MessageParserTest {
 
     @Test
-    public void testParseHybridFormat() throws Exception {
+    public void testParseHybridFormatUsingPublicAPI() {
         // Create a hybrid message with JSON content and SOH-delimited metadata
+        // This tests if the parse method correctly handles hybrid format without directly calling the private method
         String hybridMessage = "{" +
                 "\"recallType\" : \"Lender Recall Exec on behalf\"," +
                 "\"estimatedUSDNotional\" : \"\"," +
@@ -161,14 +261,13 @@ public class MessageParserTest {
 
         MessageParser<RecallTicket> parser = new MessageParser<>(MessageType.JSON, RecallTicket.class);
         
-        // Use reflection to access the private method for testing
-        java.lang.reflect.Method parseMethod = MessageParser.class.getDeclaredMethod("parseHybridFormat", String.class);
-        parseMethod.setAccessible(true);
+        // Use the public parse method 
+        RecallTicket parsedTicket = parser.parse(hybridMessage);
         
-        RecallTicket parsedTicket = (RecallTicket) parseMethod.invoke(parser, hybridMessage);
+        // Verify the parser correctly identified and processed the hybrid format
+        assertNotNull(parsedTicket);
         
         // Verify JSON content
-        assertNotNull(parsedTicket);
         assertEquals("OrderId-2025_03_27_1143_LENDER_RECALL", parsedTicket.getId());
         assertEquals("918e299b-a475-488c-9c72-75ca9f4e4e2d", parsedTicket.getReqId());
         assertEquals("Created", parsedTicket.getCurrentState());
@@ -190,6 +289,122 @@ public class MessageParserTest {
         // Verify metadata
         assertEquals("20250321T135819.46352672Z", parsedTicket.getAmpsStamp());
         assertEquals(1742855099463L, parsedTicket.getAmpsReceived());
+    }
+    
+    @Test
+    public void testParseStandardJSONWithoutMetadata() {
+        // Test standard JSON without metadata
+        String standardJson = "{" +
+                "\"id\" : \"OrderId-2025_03_27_1143_STANDARD\"," +
+                "\"reqId\" : \"918e299b-a475-488c-9c72-standard\"," +
+                "\"currentState\" : \"New\"," +
+                "\"recallQty\" : 500.0" +
+                "}";
+
+        MessageParser<RecallTicket> parser = new MessageParser<>(MessageType.JSON, RecallTicket.class);
+        RecallTicket parsedTicket = parser.parse(standardJson);
+        
+        assertNotNull(parsedTicket);
+        assertEquals("OrderId-2025_03_27_1143_STANDARD", parsedTicket.getId());
+        assertEquals("918e299b-a475-488c-9c72-standard", parsedTicket.getReqId());
+        assertEquals("New", parsedTicket.getCurrentState());
+        assertEquals(500.0, parsedTicket.getRecallQty(), 0.001);
+    }
+    
+    @Test
+    public void testConvertObjectToJsonString() {
+        // Create a RecallTicket object
+        RecallTicket ticket = new RecallTicket();
+        ticket.setId("TEST-ORDER-123");
+        ticket.setReqId("test-req-123");
+        ticket.setCurrentState("New");
+        ticket.setRecallType("Lender Recall");
+        ticket.setRecallQty(250.0);
+        ticket.setFillQty(0.0);
+        ticket.setTicker("MSFT.US");
+        ticket.setCurrency("USD");
+        ticket.setOwner("test.user");
+        ticket.setRequestor("test.user");
+        ticket.setFund("TEST_FUND");
+        
+        // Convert to JSON string
+        MessageParser<RecallTicket> parser = new MessageParser<>(MessageType.JSON, RecallTicket.class);
+        String jsonString = parser.toString(ticket);
+        
+        // Verify the string is not null or empty
+        assertNotNull(jsonString);
+        assertTrue(jsonString.length() > 0);
+        
+        // Verify it contains expected fields
+        assertTrue(jsonString.contains("\"id\""));
+        assertTrue(jsonString.contains("TEST-ORDER-123"));
+        assertTrue(jsonString.contains("\"recallQty\""));
+        assertTrue(jsonString.contains("250.0"));
+        
+        try {
+            // Verify it's valid JSON by parsing it
+            ObjectMapper objectMapper = new ObjectMapper();
+            objectMapper.registerModule(new JavaTimeModule());
+            JsonNode node = objectMapper.readTree(jsonString);
+            
+            // Verify some key properties
+            assertEquals("TEST-ORDER-123", node.get("id").asText());
+            assertEquals("test-req-123", node.get("reqId").asText());
+            assertEquals("New", node.get("currentState").asText());
+            assertEquals(250.0, node.get("recallQty").asDouble(), 0.001);
+        } catch (Exception e) {
+            fail("Failed to parse generated JSON: " + e.getMessage());
+        }
+    }
+    
+    @Test
+    public void testRoundTripConversion() {
+        // Create a RecallTicket object
+        RecallTicket originalTicket = new RecallTicket();
+        originalTicket.setId("ROUND-TRIP-TEST");
+        originalTicket.setReqId("round-trip-req-123");
+        originalTicket.setCurrentState("New");
+        originalTicket.setRecallType("Lender Recall");
+        originalTicket.setRecallQty(300.0);
+        originalTicket.setFillQty(0.0);
+        originalTicket.setFillPrice(0.0);
+        originalTicket.setTicker("AAPL.NY");
+        originalTicket.setCurrency("USD");
+        originalTicket.setMarket("US");
+        originalTicket.setOwner("roundtrip.user");
+        originalTicket.setRequestor("roundtrip.user");
+        originalTicket.setFund("RT_FUND");
+        originalTicket.setClient("RT_CLIENT");
+        
+        // Add metadata
+        originalTicket.setAmpsStamp("20250327T120000.000000Z");
+        originalTicket.setAmpsReceived(1742900000000L);
+        
+        // Convert to JSON string
+        MessageParser<RecallTicket> parser = new MessageParser<>(MessageType.JSON, RecallTicket.class);
+        String jsonString = parser.toString(originalTicket);
+        
+        // Parse the string back to an object
+        RecallTicket parsedTicket = parser.parse(jsonString);
+        
+        // Verify the round trip conversion preserved the data
+        assertEquals(originalTicket.getId(), parsedTicket.getId());
+        assertEquals(originalTicket.getReqId(), parsedTicket.getReqId());
+        assertEquals(originalTicket.getCurrentState(), parsedTicket.getCurrentState());
+        assertEquals(originalTicket.getRecallQty(), parsedTicket.getRecallQty(), 0.001);
+        assertEquals(originalTicket.getFillQty(), parsedTicket.getFillQty(), 0.001);
+        assertEquals(originalTicket.getFillPrice(), parsedTicket.getFillPrice(), 0.001);
+        assertEquals(originalTicket.getTicker(), parsedTicket.getTicker());
+        assertEquals(originalTicket.getCurrency(), parsedTicket.getCurrency());
+        assertEquals(originalTicket.getMarket(), parsedTicket.getMarket());
+        assertEquals(originalTicket.getOwner(), parsedTicket.getOwner());
+        assertEquals(originalTicket.getRequestor(), parsedTicket.getRequestor());
+        assertEquals(originalTicket.getFund(), parsedTicket.getFund());
+        assertEquals(originalTicket.getClient(), parsedTicket.getClient());
+        
+        // Note: metadata might not be preserved in toString() -> parse() roundtrip,
+        // depending on how MessageParser.toString() is implemented
+    }allQty(), 0.001);
     }
 }
 
