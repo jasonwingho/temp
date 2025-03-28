@@ -1,0 +1,115 @@
+/**
+ * Updates an Order object based on another Order from a transaction log entry
+ * 
+ * @param target The Order to update
+ * @param source The source Order from the entry
+ * @param entry The transaction log entry
+ */
+private void updateOrderFromOrderEntry(Order target, Order source, TransactionLogEntry entry) {
+    String orderId = target.getOrderID();
+    String state = entry.getState();
+    String sourceTopicName = entry.getSource();
+
+    LOGGER.debug("Updating order {} from Order entry with state {}", orderId, state);
+
+    // Only process if entry is from RECALL/TO/OMS topic
+    if (recallToOmsTopicName.equals(sourceTopicName)) {
+        // Handle each specific state according to requirements
+        if ("PendingNew".equals(state)) {
+            // For PendingNew, simply update the state
+            OrderState newState = OrderState.valueOf(state);
+            LOGGER.debug("Updating order {} state to PendingNew", orderId);
+            target.setCurrentState(newState);
+        } 
+        else if ("PendingFill".equals(state)) {
+            // For PendingFill, update state and create execution report
+            OrderState newState = OrderState.valueOf(state);
+            target.setCurrentState(newState);
+            
+            ExecutionReport fillRequest;
+            if (source.getFillRequest() != null) {
+                // Use source's fill request if available
+                fillRequest = source.getFillRequest();
+            } else {
+                // Create new fill request with data from the entry
+                fillRequest = new ExecutionReport();
+                fillRequest.setExecId(UUID.randomUUID().toString());
+                fillRequest.setClOrdID(target.getClOrdID());
+                fillRequest.setOrderID(target.getOrderID());
+                fillRequest.setOrigClOrdID(target.getOrigClOrdID());
+                fillRequest.setLastQty(entry.getFillQty());
+                fillRequest.setCumQty(entry.getFillQty());
+                fillRequest.setLeavesQty(entry.getRecallQty() - entry.getFillQty());
+                fillRequest.setLastPrice(entry.getFillPrice());
+                fillRequest.setAvgPrice(entry.getFillPrice());
+                fillRequest.setOrderState(entry.getFillQty() >= entry.getRecallQty() ? "2" : "1");
+                
+                // Copy order properties
+                fillRequest.setCurrency(target.getCurrency());
+                fillRequest.setSymbol(target.getSymbol());
+                fillRequest.setSide(target.getSide());
+                
+                // Set timestamps
+                DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss");
+                String formattedTime = LocalDateTime.now().format(timeFormatter);
+                fillRequest.setSendingTime(formattedTime);
+                fillRequest.setTransactTime(formattedTime);
+                
+                // Set exec type
+                Character execType = entry.getExecType();
+                fillRequest.setExecType(execType != null ? execType : 
+                    (entry.getFillQty() >= entry.getRecallQty() ? '2' : '1'));
+            }
+            
+            target.setFillRequest(fillRequest);
+        }
+        else if ("PendingReplace".equals(state) || "PendingCancel".equals(state)) {
+            // For PendingReplace/PendingCancel, update state and handle AmendRequest
+            OrderState newState = OrderState.valueOf(state);
+            target.setCurrentState(newState);
+            
+            if (source.getAmendRequest() != null) {
+                // Use source's amend request
+                AmendRequest srcAmend = source.getAmendRequest();
+                AmendRequest targetAmend = new AmendRequest(
+                    srcAmend.getOrderQty(),
+                    srcAmend.getPrice(),
+                    srcAmend.getClOrdID(),
+                    srcAmend.getOrigClOrdID()
+                );
+                target.setAmendRequest(targetAmend);
+            } else if (target.getAmendRequest() == null) {
+                // Create new amend request
+                String newId = UUID.randomUUID().toString();
+                AmendRequest amendRequest = new AmendRequest(
+                    entry.getRecallQty(),
+                    entry.getFillPrice(),
+                    newId,
+                    orderId
+                );
+                target.setAmendRequest(amendRequest);
+            }
+        }
+        else if ("DoneOfDay".equals(state)) {
+            // For DoneOfDay, update state and prepare for DFD (Done For Day) request
+            OrderState newState = OrderState.valueOf(state);
+            target.setCurrentState(newState);
+            
+            // Check if execution report exists, create dummy if needed
+            ExecutionReport executionReport = target.getFillRequest();
+            if (executionReport == null) {
+                executionReport = ExecutionReport.generateDummyExecution(target);
+                target.setFillRequest(executionReport);
+            }
+            
+            // Set DFD-specific values as shown in the screenshot
+            executionReport.setLastPrice(0);
+            executionReport.setLastQty(0);
+            executionReport.setExecType('3');
+            executionReport.setOrderState("3");
+            
+            // Set the needsDfdRequest flag in the RecoveryContext to true
+            this.setNeedsDfdRequest(true);
+        }
+    }
+}
