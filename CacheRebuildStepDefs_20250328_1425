@@ -1,0 +1,392 @@
+public class CacheRebuildStepDefs {
+
+    @Mock
+    private HAAmpsClient recallTicketClient;
+
+    @Mock
+    private HAAmpsClient recallToOmsClient;
+
+    @Mock
+    private HAAmpsClient omsToRecallClient;
+
+    @Mock
+    private OrderFixTransformer orderFixTransformer;
+
+    @Mock
+    private HAAmpsBuilder.SOWConfig omsToRecallSowConfig;
+
+    @Mock
+    private HAAmpsBuilder.SOWConfig recallTicketSowConfig;
+
+    // Use real RecoveryService instead of a mock
+    private RecoveryService recoveryService;
+    private ThreadSafeCache threadSafeCache;
+    private Map<String, List<TransactionLogEntry>> transactionLogs;
+    private Map<String, String> bookmarkTimestamps;
+    private Map<String, String> topicNames;
+
+    @Before
+    public void setup() {
+        MockitoAnnotations.openMocks(this);
+        
+        // Explicitly create mocks to avoid NullPointerExceptions
+        recallTicketClient = mock(HAAmpsClient.class);
+        recallToOmsClient = mock(HAAmpsClient.class);
+        omsToRecallClient = mock(HAAmpsClient.class);
+        orderFixTransformer = mock(OrderFixTransformer.class);
+        omsToRecallSowConfig = mock(HAAmpsBuilder.SOWConfig.class);
+        recallTicketSowConfig = mock(HAAmpsBuilder.SOWConfig.class);
+        
+        // Initialize data structures
+        transactionLogs = new ConcurrentHashMap<>();
+        bookmarkTimestamps = new HashMap<>();
+        topicNames = new HashMap<>();
+    }
+
+    @Given("the system is initialized with empty caches")
+    public void systemInitializedWithEmptyCaches() {
+        // We'll initialize the cache in the bookmarkTimestampsConfigured method
+    }
+
+    @Given("the AMPS clients are configured for the following topics:")
+    public void ampsClientsConfigured(DataTable dataTable) {
+        topicNames = new HashMap<>();
+        
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        for (Map<String, String> row : rows) {
+            String topic = row.get("Topic");
+            String client = row.get("Client");
+            
+            topicNames.put(client, topic);
+        }
+    }
+
+    @Given("the bookmark timestamps are configured as:")
+    public void bookmarkTimestampsConfigured(DataTable dataTable) {
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        for (Map<String, String> row : rows) {
+            String topic = row.get("Topic");
+            String timestamp = row.get("Timestamp");
+            bookmarkTimestamps.put(topic, timestamp);
+        }
+        
+        // Create the ThreadSafeCache with our test configuration
+        threadSafeCache = new ThreadSafeCache(
+            recallTicketClient, 
+            recallToOmsClient, 
+            omsToRecallClient, 
+            orderFixTransformer,
+            omsToRecallSowConfig,
+            recallTicketSowConfig
+        ) {
+            @Override
+            protected String getBookmarkTimeStamp(HAAmpsBuilder.SOWConfig sowConfig, String topicName) {
+                return bookmarkTimestamps.getOrDefault(topicName, null);
+            }
+        };
+        
+        // Set topic names
+        if (topicNames != null) {
+            if (topicNames.containsKey("recallTicketClient")) {
+                threadSafeCache.setRecallTicketTopicName(topicNames.get("recallTicketClient"));
+            }
+            if (topicNames.containsKey("recallToOmsClient")) {
+                threadSafeCache.setRecallToOmsTopicName(topicNames.get("recallToOmsClient"));
+            }
+            if (topicNames.containsKey("omsToRecallClient")) {
+                threadSafeCache.setOmsToRecallTopicName(topicNames.get("omsToRecallClient"));
+            }
+        }
+        
+        try {
+            // Create a real RecoveryService with our mocked dependencies
+            recoveryService = new RecoveryService(threadSafeCache, orderFixTransformer, recallToOmsClient, 
+                threadSafeCache.getRecallToOmsTopicName());
+            
+            // Inject it into the ThreadSafeCache
+            setPrivateField(threadSafeCache, "recoveryService", recoveryService);
+            
+            // Initialize transaction logs
+            setPrivateField(threadSafeCache, "transactionLogs", transactionLogs);
+        } catch (Exception e) {
+            System.err.println("Failed to inject test dependencies: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    @Given("the transaction logs contain the following entries:")
+    public void transactionLogsContainEntries(DataTable dataTable) {
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        
+        for (Map<String, String> row : rows) {
+            String orderId = row.get("OrderId");
+            String source = row.get("Source");
+            String state = row.get("State");
+            String timestampStr = row.get("Timestamp");
+            long recallQty = Long.parseLong(row.get("RecallQty"));
+            long fillQty = Long.parseLong(row.get("FillQty"));
+            double fillPrice = Double.parseDouble(row.get("FillPrice"));
+            
+            Character execType = null;
+            if (row.containsKey("ExecType") && row.get("ExecType") != null && !row.get("ExecType").equals("null")) {
+                String execTypeStr = row.get("ExecType");
+                if (execTypeStr.startsWith("'") && execTypeStr.endsWith("'")) {
+                    execType = execTypeStr.charAt(1);
+                }
+            }
+            
+            // Create actual objects instead of mocks
+            Object message = createRealMessage(source, orderId, state, recallQty, fillQty, fillPrice, execType);
+            Instant timestamp = parseTimestamp(timestampStr);
+            
+            TransactionLogEntry entry = new TransactionLogEntry.Builder()
+                .orderId(orderId)
+                .source(source)
+                .state(state)
+                .timestamp(timestamp)
+                .message(message)
+                .recallQty(recallQty)
+                .fillQty(fillQty)
+                .fillPrice(fillPrice)
+                .execType(execType)
+                .build();
+                
+            List<TransactionLogEntry> orderLogs = transactionLogs.computeIfAbsent(
+                orderId, k -> new ArrayList<>());
+            orderLogs.add(entry);
+        }
+    }
+
+    @When("the system initializes and rebuilds the cache")
+    public void systemInitializesAndRebuildsCache() {
+        // Configure AMPS clients to complete SOW operations
+        configureAmpsClientsForSowCompletion();
+        
+        // Here's where we run the actual initialize method with real recovery logic
+        threadSafeCache.initialize();
+    }
+
+    // Configure AMPS client mocks to complete SOW operations
+    private void configureAmpsClientsForSowCompletion() {
+        // Set up the mocks to simulate SOW completion for all three clients
+        doAnswer(invocation -> {
+            TypedHandler<?> handler = invocation.getArgument(2);
+            if (handler != null) {
+                // First call onGroupStart
+                if (handler instanceof TypedHandler.GroupStartEndHandler) {
+                    ((TypedHandler.GroupStartEndHandler) handler).onGroupStart();
+                }
+                
+                // Then call onGroupEnd
+                if (handler instanceof TypedHandler.GroupStartEndHandler) {
+                    ((TypedHandler.GroupStartEndHandler) handler).onGroupEnd();
+                }
+            }
+            return null;
+        }).when(recallTicketClient).snap(anyString(), anyString(), any(TypedHandler.class));
+        
+        doAnswer(invocation -> {
+            TypedHandler<?> handler = invocation.getArgument(2);
+            if (handler != null) {
+                if (handler instanceof TypedHandler.GroupStartEndHandler) {
+                    ((TypedHandler.GroupStartEndHandler) handler).onGroupStart();
+                    ((TypedHandler.GroupStartEndHandler) handler).onGroupEnd();
+                }
+            }
+            return null;
+        }).when(recallToOmsClient).snap(anyString(), anyString(), any(TypedHandler.class));
+        
+        doAnswer(invocation -> {
+            TypedHandler<?> handler = invocation.getArgument(2);
+            if (handler != null) {
+                if (handler instanceof TypedHandler.GroupStartEndHandler) {
+                    ((TypedHandler.GroupStartEndHandler) handler).onGroupStart();
+                    ((TypedHandler.GroupStartEndHandler) handler).onGroupEnd();
+                }
+            }
+            return null;
+        }).when(omsToRecallClient).snap(anyString(), anyString(), any(TypedHandler.class));
+    }
+
+    @Then("the cache should contain {int} orders")
+    public void cacheShouldContainOrders(int count) {
+        try {
+            Map<String, Order> orderCache = getPrivateField(threadSafeCache, "orderCache");
+            assertEquals("Order cache size doesn't match expected count", count, orderCache.size());
+        } catch (Exception e) {
+            fail("Failed to access orderCache field: " + e.getMessage());
+        }
+    }
+
+    @Then("the order {string} should be in state {string}")
+    public void orderShouldBeInState(String orderId, String expectedState) {
+        Order order = threadSafeCache.getOrder(orderId);
+        assertNotNull("Order " + orderId + " not found in cache", order);
+        assertEquals("Order state doesn't match expected state", 
+            OrderState.valueOf(expectedState), order.getCurrentState());
+    }
+
+    @Then("the order {string} should have the following attributes:")
+    public void orderShouldHaveAttributes(String orderId, DataTable dataTable) {
+        Order order = threadSafeCache.getOrder(orderId);
+        assertNotNull("Order " + orderId + " not found in cache", order);
+        
+        List<Map<String, String>> rows = dataTable.asMaps(String.class, String.class);
+        Map<String, String> attributeRow = rows.get(0);
+        
+        assertEquals("RecallQty doesn't match", 
+            Long.parseLong(attributeRow.get("RecallQty")), order.getOrdQty());
+            
+        if (order.getFillRequest() != null) {
+            ExecutionReport fillRequest = order.getFillRequest();
+            assertEquals("FillQty doesn't match", 
+                Long.parseLong(attributeRow.get("FillQty")), fillRequest.getCumQty());
+            assertEquals("FillPrice doesn't match", 
+                Double.parseDouble(attributeRow.get("FillPrice")), fillRequest.getAvgPrice(), 0.001);
+        }
+    }
+
+    @Then("no recovery actions should be required")
+    public void noRecoveryActionsShouldBeRequired() {
+        // We can verify no recovery was needed by checking publish operations
+        verify(recallToOmsClient, never()).publish(eq(threadSafeCache.getRecallToOmsTopicName()), anyString());
+        verify(recallTicketClient, never()).publish(eq(threadSafeCache.getRecallTicketTopicName()), anyString());
+    }
+
+    @Then("recovery action {string} should be triggered for order {string}")
+    public void recoveryActionShouldBeTriggered(String actionType, String orderId) {
+        // For republish we can verify publishes
+        if (actionType.equals("REPUBLISH")) {
+            verify(recallTicketClient, atLeastOnce()).publish(
+                eq(threadSafeCache.getRecallTicketTopicName()), 
+                argThat(message -> message.contains(orderId))
+            );
+        }
+        // For rebuild we can check if the order is in cache
+        if (actionType.equals("REBUILD")) {
+            assertNotNull("Order " + orderId + " should be in cache after rebuild", 
+                threadSafeCache.getOrder(orderId));
+        }
+    }
+
+    @Then("a message should be published to {string} topic with current state {string}")
+    public void messageShouldBePublishedToTopic(String topic, String state) {
+        if (topic.equals("RECALL/TICKET")) {
+            verify(recallTicketClient, atLeastOnce()).publish(
+                eq(topic), 
+                argThat(message -> message.contains(state))
+            );
+        } else if (topic.equals("RECALL/TO/OMS")) {
+            verify(recallToOmsClient, atLeastOnce()).publish(
+                eq(topic), 
+                argThat(message -> message.contains(state))
+            );
+        } else if (topic.equals("OMS/TO/RECALL")) {
+            verify(omsToRecallClient, atLeastOnce()).publish(
+                eq(topic), 
+                argThat(message -> message.contains(state))
+            );
+        }
+    }
+
+    @Then("DFD request flag should be set to {string} for order {string}")
+    public void dfdRequestFlagShouldBeSet(String flagValue, String orderId) {
+        // This is harder to verify without mocking the RecoveryService
+        // Instead, let's check if a DFD message was published
+        boolean expected = Boolean.parseBoolean(flagValue);
+        if (expected) {
+            verify(recallToOmsClient, atLeastOnce()).publish(
+                eq(threadSafeCache.getRecallToOmsTopicName()), 
+                argThat(message -> message.contains(orderId) && message.contains("DFD"))
+            );
+        }
+    }
+
+    @Then("a DFD request should be published to {string} topic for order {string}")
+    public void dfdRequestShouldBePublished(String topic, String orderId) {
+        verify(recallToOmsClient, atLeastOnce()).publish(
+            eq(topic), 
+            argThat(message -> message.contains(orderId) && message.contains("DFD"))
+        );
+    }
+
+    // Helper method to create real objects instead of mocks
+    private Object createRealMessage(String source, String orderId, String state, 
+                                   long recallQty, long fillQty, double fillPrice, 
+                                   Character execType) {
+        if (source.equals("RECALL/TICKET")) {
+            RecallTicket ticket = new RecallTicket();
+            ticket.setId(orderId);
+            ticket.setCurrentState(state);
+            ticket.setRecallQty(recallQty);
+            ticket.setFillQty(fillQty);
+            ticket.setFillPrice(fillPrice);
+            return ticket;
+        } else if (source.equals("RECALL/TO/OMS")) {
+            Order order = new Order();
+            order.setClOrdID(orderId);
+            order.setOrderID(orderId);
+            order.setOrigClOrdID(orderId);
+            order.setCurrentState(OrderState.valueOf(state));
+            order.setOrdQty(recallQty);
+            
+            if (fillQty > 0) {
+                ExecutionReport fillRequest = new ExecutionReport();
+                fillRequest.setCumQty(fillQty);
+                fillRequest.setAvgPrice(fillPrice);
+                fillRequest.setLeavesQty(recallQty - fillQty);
+                if (execType != null) {
+                    fillRequest.setExecType(execType);
+                }
+                order.setFillRequest(fillRequest);
+            }
+            
+            return order;
+        } else if (source.equals("OMS/TO/RECALL")) {
+            ExecutionReport report = new ExecutionReport();
+            report.setOrigClOrdID(orderId);
+            report.setClOrdID(orderId);
+            report.setCumQty(fillQty);
+            report.setAvgPrice(fillPrice);
+            report.setLeavesQty(recallQty - fillQty);
+            
+            if (execType != null) {
+                report.setExecType(execType);
+            }
+            
+            return report;
+        }
+        
+        return null;
+    }
+    
+    private Instant parseTimestamp(String timestampStr) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss.SSSSSSS'Z'")
+            .withZone(ZoneId.of("GMT"));
+        return Instant.from(formatter.parse(timestampStr));
+    }
+    
+    // Utility methods for accessing private fields
+    @SuppressWarnings("unchecked")
+    private <T> T getPrivateField(Object obj, String fieldName) {
+        try {
+            Class<?> threadSafeCacheClass = Class.forName("com.baml.gdot.recall.cache.ThreadSafeCache");
+            java.lang.reflect.Field field = threadSafeCacheClass.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            return (T) field.get(obj);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to get private field " + fieldName, e);
+        }
+    }
+    
+    private void setPrivateField(Object obj, String fieldName, Object value) {
+        try {
+            Class<?> threadSafeCacheClass = Class.forName("com.baml.gdot.recall.cache.ThreadSafeCache");
+            java.lang.reflect.Field field = threadSafeCacheClass.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            field.set(obj, value);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to set private field " + fieldName, e);
+        }
+    }
+}
