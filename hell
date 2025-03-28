@@ -1,115 +1,234 @@
-/**
- * Updates an Order object based on another Order from a transaction log entry
- * 
- * @param target The Order to update
- * @param source The source Order from the entry
- * @param entry The transaction log entry
- */
-private void updateOrderFromOrderEntry(Order target, Order source, TransactionLogEntry entry) {
-    String orderId = target.getOrderID();
-    String state = entry.getState();
-    String sourceTopicName = entry.getSource();
-
-    LOGGER.debug("Updating order {} from Order entry with state {}", orderId, state);
-
-    // Only process if entry is from RECALL/TO/OMS topic
-    if (recallToOmsTopicName.equals(sourceTopicName)) {
-        // Handle each specific state according to requirements
-        if ("PendingNew".equals(state)) {
-            // For PendingNew, simply update the state
-            OrderState newState = OrderState.valueOf(state);
-            LOGGER.debug("Updating order {} state to PendingNew", orderId);
-            target.setCurrentState(newState);
-        } 
-        else if ("PendingFill".equals(state)) {
-            // For PendingFill, update state and create execution report
-            OrderState newState = OrderState.valueOf(state);
-            target.setCurrentState(newState);
+private Object createRealMessage(String source, String orderId, String state, 
+                               long recallQty, long fillQty, double fillPrice,
+                               Character execType, String ticker, String currency,
+                               String fund, String positionType, String recallType) {
+    try {
+        if (source.equals("RECALL/TICKET")) {
+            RecallTicket ticket = new RecallTicket();
             
-            ExecutionReport fillRequest;
-            if (source.getFillRequest() != null) {
-                // Use source's fill request if available
-                fillRequest = source.getFillRequest();
-            } else {
-                // Create new fill request with data from the entry
-                fillRequest = new ExecutionReport();
-                fillRequest.setExecId(UUID.randomUUID().toString());
-                fillRequest.setClOrdID(target.getClOrdID());
-                fillRequest.setOrderID(target.getOrderID());
-                fillRequest.setOrigClOrdID(target.getOrigClOrdID());
-                fillRequest.setLastQty(entry.getFillQty());
-                fillRequest.setCumQty(entry.getFillQty());
-                fillRequest.setLeavesQty(entry.getRecallQty() - entry.getFillQty());
-                fillRequest.setLastPrice(entry.getFillPrice());
-                fillRequest.setAvgPrice(entry.getFillPrice());
-                fillRequest.setOrderState(entry.getFillQty() >= entry.getRecallQty() ? "2" : "1");
+            // Basic fields
+            ticket.setId(orderId);
+            ticket.setReqId(orderId);
+            ticket.setCurrentState(state);
+            ticket.setRecallQty(recallQty);
+            ticket.setFillQty(fillQty);
+            ticket.setFillPrice(fillPrice);
+            
+            // Required fields for Order.createFromRecallTicket
+            ticket.setTicker(ticker);
+            ticket.setCurrency(currency);
+            ticket.setFund(fund);
+            ticket.setPositionType(positionType);
+            ticket.setRecallType(recallType);
+            
+            // Dates and times
+            ticket.setEffectiveDate(LocalDate.now());
+            ZonedDateTime now = ZonedDateTime.now(ZoneId.of("GMT"));
+            ticket.setEntryTime(now);
+            
+            // Create the composite ID
+            RecallTicketCompositeId compositeId = new RecallTicketCompositeId(orderId, now, state);
+            ticket.setCompositeId(compositeId);
+            
+            // Additional required fields
+            ticket.setSwapCurrency(currency);
+            ticket.setClient("TestClient");
+            ticket.setRequestor("TestUser");
+            ticket.setOwner("TestOwner");
+            ticket.setOrigType("Original");
+            ticket.setCoperId(1234);
+            ticket.setClientType("TestClientType");
+            ticket.setClientSubType("SubType");
+            ticket.setMarket("TestMarket");
+            ticket.setEstimatedUSDNotional(recallQty * 100.0); // Some reasonable value
+            ticket.setUSDNotional(fillQty * fillPrice);
+            ticket.setFillInstruction("TestInstruction");
+            
+            return ticket;
+        } 
+        else if (source.equals("RECALL/TO/OMS")) {
+            // For PendingFill state, we should create an ExecutionReport object directly
+            if ("PendingFill".equals(state)) {
+                ExecutionReport report = new ExecutionReport();
                 
-                // Copy order properties
-                fillRequest.setCurrency(target.getCurrency());
-                fillRequest.setSymbol(target.getSymbol());
-                fillRequest.setSide(target.getSide());
+                // Set basic properties
+                report.setClOrdID(orderId);
+                report.setOrderID(orderId);
+                report.setOrigClOrdID(orderId);
+                report.setLastQty(fillQty);
+                report.setCumQty(fillQty);
+                report.setLeavesQty(recallQty - fillQty);
+                report.setLastPrice(fillPrice);
+                report.setAvgPrice(fillPrice);
+                
+                // Set identifiers
+                report.setExecId(UUID.randomUUID().toString());
+                report.setMsgType("8"); // ExecutionReport
+                
+                // Set order properties
+                report.setCurrency(currency);
+                report.setSymbol(ticker);
+                report.setSide('1');
                 
                 // Set timestamps
                 DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss");
                 String formattedTime = LocalDateTime.now().format(timeFormatter);
-                fillRequest.setSendingTime(formattedTime);
-                fillRequest.setTransactTime(formattedTime);
+                report.setSendingTime(formattedTime);
+                report.setTransactTime(formattedTime);
                 
-                // Set exec type
-                Character execType = entry.getExecType();
-                fillRequest.setExecType(execType != null ? execType : 
-                    (entry.getFillQty() >= entry.getRecallQty() ? '2' : '1'));
+                // Set execution type and order state
+                if (execType != null) {
+                    report.setExecType(execType);
+                } else {
+                    report.setExecType(fillQty >= recallQty ? '2' : '1');
+                }
+                report.setOrderState(fillQty >= recallQty ? "2" : "1");
+                
+                // Set routing info
+                report.setSenderCompID("CBRECALL");
+                report.setTargetCompID("OMS_PROD");
+                
+                return report;
+            }
+            else if ("DoneOfDay".equals(state)) {
+                // For DFD, also return an ExecutionReport with DFD-specific values
+                ExecutionReport report = new ExecutionReport();
+                report.setClOrdID(orderId);
+                report.setOrderID(orderId);
+                report.setOrigClOrdID(orderId);
+                
+                // DFD-specific values
+                report.setLastPrice(0);
+                report.setLastQty(0);
+                report.setExecType('3');
+                report.setOrderState("3");
+                
+                // Other standard values
+                report.setMsgType("8");
+                report.setSenderCompID("CBRECALL");
+                report.setTargetCompID("OMS_PROD");
+                report.setCurrency(currency);
+                report.setSymbol(ticker);
+                report.setSide('1');
+                
+                // Set timestamps
+                DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss");
+                String formattedTime = LocalDateTime.now().format(timeFormatter);
+                report.setSendingTime(formattedTime);
+                report.setTransactTime(formattedTime);
+                
+                return report;
+            }
+            else {
+                // For other states (PendingNew, PendingReplace, PendingCancel), create Order
+                Order order = recallType != null && recallType.equals("Lender Recall Exec on behalf") 
+                    ? new FidessaOrder() : new Order();
+                
+                // Set basic properties
+                order.setClOrdID(orderId);
+                order.setOrderID(orderId);
+                order.setOrigClOrdID(orderId);
+                order.setCurrentState(OrderState.valueOf(state));
+                order.setOrdQty(recallQty);
+                order.setCurrency(currency);
+                order.setSymbol(ticker);
+                
+                // Set standard values
+                order.setSenderCompID("CBRECALL");
+                order.setSenderSubID("CB");
+                order.setTargetCompID("CBOMSRECALL");
+                order.setTargetSubID("SWAP");
+                order.setMsgType("D");
+                order.setIdSource("5");
+                order.setHandlInst("3");
+                order.setSide('1');
+                order.setOrderType("1");
+                
+                // Set times
+                LocalDateTime now = LocalDateTime.now();
+                DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss");
+                DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd");
+                order.setTradeDate(now.format(dateFormatter));
+                order.setSendingTime(now.format(timeFormatter));
+                order.setTransactTime(now.format(timeFormatter));
+                
+                // For PendingReplace or PendingCancel, create AmendRequest
+                if ("PendingReplace".equals(state) || "PendingCancel".equals(state)) {
+                    String newId = UUID.randomUUID().toString();
+                    AmendRequest amendRequest = new AmendRequest(
+                        recallQty,
+                        fillPrice,
+                        newId,
+                        orderId
+                    );
+                    order.setAmendRequest(amendRequest);
+                }
+                
+                return order;
+            }
+        } 
+        else if (source.equals("OMS/TO/RECALL")) {
+            ExecutionReport report = new ExecutionReport();
+            
+            // Set IDs
+            report.setOrigClOrdID(orderId);
+            report.setClOrdID(orderId);
+            report.setOrderID(orderId);
+            
+            // Set quantities and prices
+            report.setCumQty(fillQty);
+            report.setAvgPrice(fillPrice);
+            report.setLeavesQty(recallQty - fillQty);
+            report.setLastQty(fillQty);
+            report.setLastPrice(fillPrice);
+            
+            // Set order state
+            report.setOrderState(state);
+            
+            // Set execution type
+            if (execType != null) {
+                report.setExecType(execType);
+            } else {
+                // Default exec type based on state
+                if ("New".equals(state)) {
+                    report.setExecType('0');
+                } else if ("PartiallyFilled".equals(state)) {
+                    report.setExecType('1');
+                } else if ("Filled".equals(state)) {
+                    report.setExecType('2');
+                } else if ("DoneOfDay".equals(state)) {
+                    report.setExecType('3');
+                } else if ("Canceled".equals(state)) {
+                    report.setExecType('4');
+                } else if ("Replaced".equals(state)) {
+                    report.setExecType('5');
+                } else if ("PendingCancel".equals(state)) {
+                    report.setExecType('6');
+                } else if ("Rejected".equals(state)) {
+                    report.setExecType('8');
+                } else {
+                    report.setExecType('0'); // Default
+                }
             }
             
-            target.setFillRequest(fillRequest);
+            // Standard values
+            report.setSenderCompID("OMS_PROD");
+            report.setTargetCompID("CBRECALL");
+            report.setCurrency(currency);
+            report.setSymbol(ticker);
+            report.setSide('1');
+            
+            // Set timestamps
+            DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss");
+            String formattedTime = LocalDateTime.now().format(timeFormatter);
+            report.setSendingTime(formattedTime);
+            report.setTransactTime(formattedTime);
+            
+            return report;
         }
-        else if ("PendingReplace".equals(state) || "PendingCancel".equals(state)) {
-            // For PendingReplace/PendingCancel, update state and handle AmendRequest
-            OrderState newState = OrderState.valueOf(state);
-            target.setCurrentState(newState);
-            
-            if (source.getAmendRequest() != null) {
-                // Use source's amend request
-                AmendRequest srcAmend = source.getAmendRequest();
-                AmendRequest targetAmend = new AmendRequest(
-                    srcAmend.getOrderQty(),
-                    srcAmend.getPrice(),
-                    srcAmend.getClOrdID(),
-                    srcAmend.getOrigClOrdID()
-                );
-                target.setAmendRequest(targetAmend);
-            } else if (target.getAmendRequest() == null) {
-                // Create new amend request
-                String newId = UUID.randomUUID().toString();
-                AmendRequest amendRequest = new AmendRequest(
-                    entry.getRecallQty(),
-                    entry.getFillPrice(),
-                    newId,
-                    orderId
-                );
-                target.setAmendRequest(amendRequest);
-            }
-        }
-        else if ("DoneOfDay".equals(state)) {
-            // For DoneOfDay, update state and prepare for DFD (Done For Day) request
-            OrderState newState = OrderState.valueOf(state);
-            target.setCurrentState(newState);
-            
-            // Check if execution report exists, create dummy if needed
-            ExecutionReport executionReport = target.getFillRequest();
-            if (executionReport == null) {
-                executionReport = ExecutionReport.generateDummyExecution(target);
-                target.setFillRequest(executionReport);
-            }
-            
-            // Set DFD-specific values as shown in the screenshot
-            executionReport.setLastPrice(0);
-            executionReport.setLastQty(0);
-            executionReport.setExecType('3');
-            executionReport.setOrderState("3");
-            
-            // Set the needsDfdRequest flag in the RecoveryContext to true
-            this.setNeedsDfdRequest(true);
-        }
+    } catch (Exception e) {
+        System.err.println("Error creating test message object: " + e.getMessage());
+        e.printStackTrace();
     }
+    return null;
 }
