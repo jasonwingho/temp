@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Script to extract distinct RecallTicket IDs from logs
+# Usage: ./extract_recall_ids.sh [logfile]
+
+# Define log file (can be passed as argument)
+LOGFILE=${1:-"logfile.log"}
+
+# Check if file exists
+if [ ! -f "$LOGFILE" ]; then
+    echo "Error: Log file '$LOGFILE' not found!"
+    exit 1
+fi
+
+# Extract distinct id values
+echo "Extracting distinct RecallTicket IDs from $LOGFILE..."
+IDS=$(grep "Submitting RecallTicket for async saving" "$LOGFILE" | 
+  grep -o "id='[^']*'" | 
+  sed "s/id='//;s/'$//" | 
+  sort -u)
+
+# Display results and count
+if [ -z "$IDS" ]; then
+    echo "No RecallTicket IDs found."
+    COUNT=0
+else
+    echo "$IDS"
+    COUNT=$(echo "$IDS" | wc -l)
+fi
+
+echo "--------"
+echo "Total: $COUNT distinct IDs found."
