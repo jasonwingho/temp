@@ -3,18 +3,42 @@
 # Function to convert timestamp to seconds
 timestamp_to_seconds() {
     local timestamp=$1
+    # Use 10# prefix to force decimal interpretation regardless of leading zeros
     local hours=$(echo "$timestamp" | cut -d':' -f1)
     local minutes=$(echo "$timestamp" | cut -d':' -f2)
     local seconds=$(echo "$timestamp" | cut -d':' -f3 | cut -d',' -f1)
     
-    # Convert to total seconds
-    echo $(( (hours * 3600) + (minutes * 60) + seconds ))
+    # Convert to total seconds with explicit base 10
+    echo $(( (10#$hours * 3600) + (10#$minutes * 60) + 10#$seconds ))
 }
 
 # Create a temporary file
 TEMP_FILE=$(mktemp)
 
-# Process the log file
+# Check if input file is provided as argument
+if [ $# -ge 1 ]; then
+    # Use provided file
+    INPUT_FILE="$1"
+    if [ ! -f "$INPUT_FILE" ]; then
+        echo "Error: File '$INPUT_FILE' not found."
+        rm "$TEMP_FILE"
+        exit 1
+    fi
+    cat "$INPUT_FILE" > "$TEMP_FILE.input"
+else
+    # Check if we're getting data from stdin (pipe)
+    if [ -t 0 ]; then
+        echo "Error: No input file provided and no data piped from stdin."
+        echo "Usage: $0 [input_file]"
+        echo "   or: cat input_file | $0"
+        rm "$TEMP_FILE"
+        exit 1
+    fi
+    # Read from stdin
+    cat > "$TEMP_FILE.input"
+fi
+
+# Process the log data
 while IFS= read -r line; do
     # Skip header or empty lines
     if [[ -z "$line" || "$line" =~ ^[[:space:]]*Timestamp ]]; then
@@ -36,7 +60,7 @@ while IFS= read -r line; do
     
     # Write to temp file
     echo "$id|$state|$seconds|$timestamp" >> "$TEMP_FILE"
-done < output.txt
+done < "$TEMP_FILE.input"
 
 # Sort by ID and timestamp
 sort -t'|' -k1,1 -k3,3n "$TEMP_FILE" > "${TEMP_FILE}.sorted"
@@ -48,6 +72,7 @@ echo "----------------------"
 prev_id=""
 prev_state=""
 prev_seconds=0
+prev_timestamp=""
 
 while IFS='|' read -r id state seconds timestamp; do
     # If same ID and state has changed
@@ -59,13 +84,15 @@ while IFS='|' read -r id state seconds timestamp; do
         echo "ID: $id"
         echo "  Transition: $prev_state -> $state"
         echo "  Time: $time_diff seconds"
+        echo "  From: $prev_timestamp To: $timestamp"
     fi
     
     # Update previous values
     prev_id="$id"
     prev_state="$state"
     prev_seconds=$seconds
+    prev_timestamp="$timestamp"
 done < "${TEMP_FILE}.sorted"
 
 # Clean up
-rm "$TEMP_FILE" "${TEMP_FILE}.sorted"
+rm "$TEMP_FILE" "${TEMP_FILE}.input" "${TEMP_FILE}.sorted" 2>/dev/null
