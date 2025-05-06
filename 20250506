@@ -1,32 +1,40 @@
 #!/bin/bash
 
-# Script to extract distinct RecallTicket IDs from logs
-# Usage: ./extract_recall_ids.sh [logfile]
+# Enhanced script to extract RecallTicket details from logs
+# Usage: ./extract_recall_details.sh [logfile] [outputfile]
 
-# Define log file (can be passed as argument)
+# Define log file and output file (can be passed as arguments)
 LOGFILE=${1:-"logfile.log"}
+OUTPUTFILE=${2:-"recall_details.txt"}
 
-# Check if file exists
+# Check if log file exists
 if [ ! -f "$LOGFILE" ]; then
     echo "Error: Log file '$LOGFILE' not found!"
     exit 1
 fi
 
-# Extract distinct id values
-echo "Extracting distinct RecallTicket IDs from $LOGFILE..."
-IDS=$(grep "Submitting RecallTicket for async saving" "$LOGFILE" | 
-  grep -o "id='[^']*'" | 
-  sed "s/id='//;s/'$//" | 
-  sort -u)
+# Create/clear the output file with header
+echo "Timestamp | ID | State" > "$OUTPUTFILE"
+echo "--------------------------" >> "$OUTPUTFILE"
 
-# Display results and count
-if [ -z "$IDS" ]; then
-    echo "No RecallTicket IDs found."
-    COUNT=0
-else
-    echo "$IDS"
-    COUNT=$(echo "$IDS" | wc -l)
-fi
+# Process log file
+echo "Extracting RecallTicket details from $LOGFILE..."
+grep "Submitting RecallTicket for async saving" "$LOGFILE" | while read -r line; do
+    # Extract timestamp (assuming it's at the beginning of the line)
+    TIMESTAMP=$(echo "$line" | grep -o "^[0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\},[0-9]\{3\}")
+    
+    # Extract ID
+    ID=$(echo "$line" | grep -o "id='[^']*'" | sed "s/id='//;s/'$//")
+    
+    # Extract state
+    STATE=$(echo "$line" | grep -o "currentState='[^']*'" | sed "s/currentState='//;s/'$//")
+    
+    # Write to output file
+    echo "$TIMESTAMP | $ID | $STATE" >> "$OUTPUTFILE"
+done
 
-echo "--------"
-echo "Total: $COUNT distinct IDs found."
+# Count and display summary
+COUNT=$(grep -v "^Timestamp\|^------" "$OUTPUTFILE" | wc -l)
+echo "Extraction complete! $COUNT records written to $OUTPUTFILE"
+echo "Sample output:"
+head -n 5 "$OUTPUTFILE"
