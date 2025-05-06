@@ -1,65 +1,71 @@
 #!/bin/bash
-# Script to analyze state transition durations
+
+# Script to analyze state transition durations without using bc
 # Usage: ./analyze_transitions.sh [inputfile] [outputfile]
+
 # Define input and output files
-INPUTFILE=${1:-"recall_details.txt"}
-OUTPUTFILE=${2:-"state_transition_durations.txt"}
+INPUTFILE=${1:-"output.txt"}
+OUTPUTFILE=${2:-"transition_durations.txt"}
+
 # Check if input file exists
 if [ ! -f "$INPUTFILE" ]; then
-  echo "Error: Input file '$INPUTFILE' not found!"
-  exit 1
+    echo "Error: Input file '$INPUTFILE' not found!"
+    exit 1
 fi
+
 # Create/clear the output file with header
 echo "ID | From State | To State | Duration (seconds)" > "$OUTPUTFILE"
 echo "-------------------------------------------------" >> "$OUTPUTFILE"
+
 # Create a temporary file to store processed data
 TEMPFILE=$(mktemp)
-# Skip header lines and process the input data
-tail -n +3 "$INPUTFILE" | while read -r line; do
-  TIMESTAMP=$(echo "$line" | cut -d'|' -f1 | xargs)
-  ID=$(echo "$line" | cut -d'|' -f2 | xargs)
-  STATE=$(echo "$line" | cut -d'|' -f3 | xargs)
 
-  # Convert timestamp format to seconds since epoch for calculations
-  # Format: HH:MM:SS,mmm -> convert to seconds + milliseconds/1000
-  HOURS=$(echo "$TIMESTAMP" | cut -d':' -f1)
-  MINUTES=$(echo "$TIMESTAMP" | cut -d':' -f2)
-  SECONDS_MS=$(echo "$TIMESTAMP" | cut -d':' -f3)
-  SECONDS_PART=$(echo "$SECONDS_MS" | cut -d',' -f1)
-  MS_PART=$(echo "$SECONDS_MS" | cut -d',' -f2)
-  
-  TOTAL_SECONDS=$(( ($HOURS 3600) + ($MINUTES 60) + $SECONDS_PART ))
-  MS_DECIMAL=$(echo "scale=3; $MS_PART/1000" | bc)
-  EPOCH_TIME=$(echo "$TOTAL_SECONDS + $MS_DECIMAL" | bc)
-  
-  # Store the processed data: ID, STATE, TIMESTAMP, EPOCH_TIME
-  echo "$ID|$STATE|$TIMESTAMP|$EPOCH_TIME" >> "$TEMPFILE"
+# Skip header lines and process the input data
+grep -v "^Timestamp\|^------" "$INPUTFILE" | while read -r line; do
+    TIMESTAMP=$(echo "$line" | cut -d'|' -f1 | xargs)
+    ID=$(echo "$line" | cut -d'|' -f2 | xargs)
+    STATE=$(echo "$line" | cut -d'|' -f3 | xargs)
+    
+    # Convert timestamp to seconds (ignoring milliseconds for simplicity)
+    HOURS=$(echo "$TIMESTAMP" | cut -d':' -f1)
+    MINUTES=$(echo "$TIMESTAMP" | cut -d':' -f2)
+    SECONDS_PART=$(echo "$TIMESTAMP" | cut -d':' -f3 | cut -d',' -f1)
+    
+    # Calculate total seconds - using only integer arithmetic
+    TOTAL_SECONDS=$(( ($HOURS * 3600) + ($MINUTES * 60) + $SECONDS_PART ))
+    
+    # Store the processed data: ID, STATE, TIMESTAMP, TOTAL_SECONDS
+    echo "$ID|$STATE|$TIMESTAMP|$TOTAL_SECONDS" >> "$TEMPFILE"
 done
-# Process the temporary file to calculate durations
-# First, sort by ID and timestamp
+
+# Sort by ID and timestamp
 sort -t'|' -k1,1 -k4,4n "$TEMPFILE" > "${TEMPFILE}.sorted"
+
 # Process the sorted data to find transitions
 PREV_ID=""
 PREV_STATE=""
 PREV_TIME=""
-PREV_EPOCH=""
-cat "${TEMPFILE}.sorted" | while IFS='|' read -r ID STATE TIMESTAMP EPOCH_TIME; do
-  if [ "$ID" == "$PREV_ID" ] && [ "$STATE" != "$PREV_STATE" ]; then
-    # This is a state transition for the same ID
-    DURATION=$(echo "$EPOCH_TIME - $PREV_EPOCH" | bc)
-    echo "$ID | $PREV_STATE | $STATE | $DURATION" >> "$OUTPUTFILE"
-  fi
+PREV_SECONDS=0
 
-  # Save current values for next iteration
-  PREV_ID="$ID"
-  PREV_STATE="$STATE"
-  PREV_TIME="$TIMESTAMP"
-  PREV_EPOCH="$EPOCH_TIME"
+cat "${TEMPFILE}.sorted" | while IFS='|' read -r ID STATE TIMESTAMP SECONDS; do
+    if [ "$ID" = "$PREV_ID" ] && [ "$STATE" != "$PREV_STATE" ]; then
+        # This is a state transition for the same ID
+        DURATION=$(( $SECONDS - $PREV_SECONDS ))
+        echo "$ID | $PREV_STATE | $STATE | $DURATION" >> "$OUTPUTFILE"
+    fi
+    
+    # Save current values for next iteration
+    PREV_ID="$ID"
+    PREV_STATE="$STATE"
+    PREV_TIME="$TIMESTAMP"
+    PREV_SECONDS=$SECONDS
 done
+
 # Count and display summary
 COUNT=$(grep -v "^ID\|^-----" "$OUTPUTFILE" | wc -l)
 echo "Analysis complete! $COUNT state transitions found and written to $OUTPUTFILE"
 echo "Sample output:"
 head -n 5 "$OUTPUTFILE"
+
 # Clean up temporary files
 rm -f "$TEMPFILE" "${TEMPFILE}.sorted"
